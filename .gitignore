@@ -13,3 +13,26 @@ pip-selfcheck.json
 .vscode/
 *.swp
 *.swo
+
+# Build / packaging
+*.egg-info/
+dist/
+build/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Credentials — NEVER commit
+satchange-fda71ff162bb.json
+*.json.bak
+
+# OS / local artifacts
+nul
+.DS_Store
+Thumbs.db
+
+# Tooling
+mise.toml
+.sisyphus/
