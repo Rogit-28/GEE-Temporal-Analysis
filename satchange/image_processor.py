@@ -299,3 +299,87 @@ class ImageProcessor:
             width_b = metadata_b.get("width")
             height_b = metadata_b.get("height")
 
+            if width_a != width_b or height_a != height_b:
+                logger.warning(
+                    f"Image dimensions differ - Date A: {width_a}x{height_a}, Date B: {width_b}x{height_b}"
+                )
+
+            # Check coordinate reference system (CRS)
+            crs_a = metadata_a.get("crs")
+            crs_b = metadata_b.get("crs")
+
+            if crs_a != crs_b:
+                logger.warning(
+                    f"Different CRS detected - Date A: {crs_a}, Date B: {crs_b}"
+                )
+
+            # Check transform (georeferencing)
+            transform_a = metadata_a.get("transform")
+            transform_b = metadata_b.get("transform")
+
+            if transform_a != transform_b:
+                logger.warning("Different geotransforms detected")
+
+            # For now, we'll proceed with a warning
+            # In a production system, you might want to apply coregistration transforms
+
+        except Exception as e:
+            logger.error(f"Coregistration check failed: {e}")
+            # Don't raise exception, just log the issue
+
+    def _apply_radiometric_normalization(
+        self, bands_a: Dict[str, np.ndarray], bands_b: Dict[str, np.ndarray]
+    ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+        """Apply radiometric normalization to image pairs.
+
+        Args:
+            bands_a: Band arrays for Date A
+            bands_b: Band arrays for Date B
+
+        Returns:
+            Tuple of (normalized_bands_a, normalized_bands_b)
+        """
+        try:
+            # For Sentinel-2 Surface Reflectance products, atmospheric correction
+            # is already applied via Sen2Cor, so radiometric normalization
+            # is typically not required
+
+            # However, we can apply histogram matching if there are significant
+            # brightness differences between the images
+
+            # Check for significant brightness differences
+            brightness_diff = self._calculate_brightness_difference(bands_a, bands_b)
+
+            if brightness_diff > 0.1:  # 10% difference threshold
+                logger.info(
+                    f"Significant brightness difference detected ({brightness_diff:.2%}), applying histogram matching"
+                )
+                bands_a, bands_b = self._apply_histogram_matching(bands_a, bands_b)
+            else:
+                logger.info(
+                    "Brightness differences within acceptable range, skipping normalization"
+                )
+
+            return bands_a, bands_b
+
+        except Exception as e:
+            logger.error(f"Radiometric normalization failed: {e}")
+            # Return original bands if normalization fails
+            return bands_a, bands_b
+
+    def _calculate_brightness_difference(
+        self, bands_a: Dict[str, np.ndarray], bands_b: Dict[str, np.ndarray]
+    ) -> float:
+        """Calculate brightness difference between image pairs.
+
+        Args:
+            bands_a: Band arrays for Date A
+            bands_b: Band arrays for Date B
+
+        Returns:
+            Normalized brightness difference (0-1)
+        """
+        try:
+            # Calculate mean brightness for common bands
+            common_bands = set(bands_a.keys()) & set(bands_b.keys())
+
