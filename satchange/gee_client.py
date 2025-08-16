@@ -181,3 +181,96 @@ class GEEClient:
         # Sentinel-2 Surface Reflectance collection
         collection = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
 
+        # Apply filters
+        filtered = (
+            collection.filterBounds(bbox)
+            .filterDate(start_date, end_date)
+            .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", cloud_threshold))
+        )
+
+        logger.info(f"Query found {filtered.size().getInfo()} images")
+        return filtered
+
+    def get_scenes_metadata(
+        self, collection: ee.ImageCollection
+    ) -> List[Dict[str, Any]]:
+        """Get metadata for scenes in collection.
+
+        Args:
+            collection: GEE ImageCollection
+
+        Returns:
+            List of scene metadata dictionaries
+        """
+        try:
+            # Get collection info
+            collection_info = collection.getInfo()
+
+            if "features" not in collection_info:
+                return []
+
+            scenes = []
+            for feature in collection_info["features"]:
+                properties = feature.get("properties", {})
+
+                # Parse date from system:time_start (milliseconds epoch)
+                time_start = properties.get("system:time_start")
+                if time_start:
+                    try:
+                        date_val = datetime.fromtimestamp(time_start / 1000).strftime(
+                            "%Y-%m-%d"
+                        )
+                    except (ValueError, OSError, OverflowError):
+                        date_val = "Unknown"
+                else:
+                    date_val = properties.get("SENSING_TIME", "Unknown")
+
+                # Extract relevant metadata
+                scene_info = {
+                    "id": feature.get("id"),
+                    "date": date_val,
+                    "cloud_coverage": properties.get("CLOUDY_PIXEL_PERCENTAGE", 0),
+                    "tile_id": properties.get("MGRS_TILE", "Unknown"),
+                    "product_id": properties.get("PRODUCT_ID", "Unknown"),
+                }
+
+                scenes.append(scene_info)
+
+            return scenes
+
+        except Exception as e:
+            logger.error(f"Failed to get scenes metadata: {e}")
+            return []
+
+    def select_best_image_pair(
+        self,
+        collection: ee.ImageCollection,
+        start_date: datetime,
+        end_date: datetime,
+        cloud_threshold: int = None,
+    ) -> Tuple[ee.Image, ee.Image]:
+        """Select optimal image pair from collection.
+
+        Selects the clearest image pair that meets the cloud coverage threshold.
+        If a candidate exceeds the threshold, it is rejected and the next
+        clearest candidate is tried.
+
+        Args:
+            collection: ee.ImageCollection (filtered by AOI and date range)
+            start_date: Target start date
+            end_date: Target end date
+            cloud_threshold: Maximum allowed cloud coverage percentage.
+                           If None, uses config value or defaults to 20.
+
+        Returns:
+            Tuple of (date_a_image, date_b_image) as ee.Image objects
+
+        Raises:
+            ValueError: If no valid image pair can be found within thresholds
+        """
+        from datetime import timedelta
+
+        # Get cloud threshold from config if not provided
+        if cloud_threshold is None:
+            cloud_threshold = self.config.get("cloud_threshold", 20)
+
