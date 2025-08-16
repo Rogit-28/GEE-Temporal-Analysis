@@ -383,3 +383,285 @@ class ImageProcessor:
             # Calculate mean brightness for common bands
             common_bands = set(bands_a.keys()) & set(bands_b.keys())
 
+            if not common_bands:
+                return 0.0
+
+            brightness_a = []
+            brightness_b = []
+
+            for band in common_bands:
+                # Exclude QA band from brightness calculation
+                if band != "QA60":
+                    band_a = bands_a[band]
+                    band_b = bands_b[band]
+
+                    # Calculate mean brightness (excluding zero values)
+                    valid_pixels_a = band_a[band_a > 0]
+                    valid_pixels_b = band_b[band_b > 0]
+
+                    if len(valid_pixels_a) > 0 and len(valid_pixels_b) > 0:
+                        brightness_a.append(np.mean(valid_pixels_a))
+                        brightness_b.append(np.mean(valid_pixels_b))
+
+            if not brightness_a or not brightness_b:
+                return 0.0
+
+            # Calculate relative difference
+            mean_brightness_a = np.mean(brightness_a)
+            mean_brightness_b = np.mean(brightness_b)
+
+            if abs(mean_brightness_a) < 1e-10:
+                return 0.0
+
+            relative_diff = (
+                abs(mean_brightness_b - mean_brightness_a) / mean_brightness_a
+            )
+            return min(relative_diff, 1.0)  # Cap at 1.0
+
+        except Exception as e:
+            logger.error(f"Failed to calculate brightness difference: {e}")
+            return 0.0
+
+    def _apply_histogram_matching(
+        self, bands_a: Dict[str, np.ndarray], bands_b: Dict[str, np.ndarray]
+    ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+        """Apply histogram matching to normalize brightness.
+
+        Args:
+            bands_a: Band arrays for Date A (reference)
+            bands_b: Band arrays for Date B (to be normalized)
+
+        Returns:
+            Tuple of (normalized_bands_a, normalized_bands_b)
+        """
+        try:
+            bands_a_norm = {}
+            bands_b_norm = {}
+
+            common_bands = set(bands_a.keys()) & set(bands_b.keys())
+
+            for band in common_bands:
+                if band != "QA60":  # Don't normalize QA band
+                    band_a = bands_a[band]
+                    band_b = bands_b[band]
+
+                    # Apply histogram matching
+                    band_b_matched = self._match_histogram(band_a, band_b)
+
+                    bands_a_norm[band] = band_a
+                    bands_b_norm[band] = band_b_matched
+                else:
+                    # Keep QA band as-is
+                    bands_a_norm[band] = band_a
+                    bands_b_norm[band] = band_b
+
+            return bands_a_norm, bands_b_norm
+
+        except Exception as e:
+            logger.error(f"Histogram matching failed: {e}")
+            # Return original bands if matching fails
+            return bands_a, bands_b
+
+    def _match_histogram(self, reference: np.ndarray, target: np.ndarray) -> np.ndarray:
+        """Match histogram of target image to reference image.
+
+        Args:
+            reference: Reference image array
+            target: Target image array to be normalized
+
+        Returns:
+            Histogram-matched target array
+        """
+        try:
+            # Flatten and get valid (non-zero) pixels
+            ref_valid = reference[reference > 0].flatten()
+            tgt_valid = target[target > 0].flatten()
+
+            if len(ref_valid) == 0 or len(tgt_valid) == 0:
+                return target
+
+            # Calculate histograms over a shared bin range
+            combined_min = min(ref_valid.min(), tgt_valid.min())
+            combined_max = max(ref_valid.max(), tgt_valid.max())
+
+            ref_hist, bin_edges = np.histogram(
+                ref_valid, bins=256, range=(combined_min, combined_max)
+            )
+            tgt_hist, _ = np.histogram(
+                tgt_valid, bins=256, range=(combined_min, combined_max)
+            )
+
+            # Cumulative distribution functions (normalized to [0, 1])
+            ref_cdf = np.cumsum(ref_hist).astype(np.float64)
+            tgt_cdf = np.cumsum(tgt_hist).astype(np.float64)
+
+            # Guard against flat CDF (e.g., uniform or all-zero histogram)
+            if ref_cdf[-1] == 0 or tgt_cdf[-1] == 0:
+                logger.warning(
+                    "Flat CDF detected in histogram matching, skipping normalization for this band"
+                )
+                return target
+
+            ref_cdf /= ref_cdf[-1]
+            tgt_cdf /= tgt_cdf[-1]
+
+            # Build lookup: for each target bin, find the reference bin with
+            # the closest CDF value
+            bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+            lookup = np.interp(tgt_cdf, ref_cdf, bin_centers)
+
+            # Map target pixels through the lookup table
+            # Digitize target values into bins, then replace with lookup values
+            bin_indices = np.digitize(target.flatten(), bin_edges[:-1]) - 1
+            bin_indices = np.clip(bin_indices, 0, 255)
+            target_matched = lookup[bin_indices].reshape(target.shape)
+
+            # Preserve zero (no-data) pixels
+            target_matched[target == 0] = 0
+
+            return target_matched.astype(reference.dtype)
+
+        except Exception as e:
+            logger.error(f"Histogram matching failed: {e}")
+            return target
+
+    def validate_image_quality(
+        self, bands: Dict[str, np.ndarray], metadata: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Validate image quality metrics.
+
+        Args:
+            bands: Band arrays
+            metadata: Image metadata
+
+        Returns:
+            Dictionary with quality metrics
+        """
+        try:
+            quality_metrics = {
+                "total_pixels": 0,
+                "valid_pixels": 0,
+                "cloud_coverage": 0,
+                "brightness_mean": 0,
+                "brightness_std": 0,
+                "has_data": False,
+            }
+
+            # Calculate basic statistics
+            total_pixels = 0
+            valid_pixels = 0
+            brightness_sum = 0
+            brightness_sum_sq = 0
+
+            for band_name, band_array in bands.items():
+                if band_name != "QA60":  # Exclude QA band from statistics
+                    total_pixels += band_array.size
+                    valid_pixels += np.sum(band_array > 0)
+
+                    # Calculate brightness statistics
+                    valid_values = band_array[band_array > 0]
+                    if len(valid_values) > 0:
+                        brightness_sum += np.sum(valid_values)
+                        brightness_sum_sq += np.sum(valid_values**2)
+
+            if total_pixels > 0:
+                quality_metrics["total_pixels"] = total_pixels
+                quality_metrics["valid_pixels"] = valid_pixels
+                quality_metrics["valid_pixel_percentage"] = (
+                    valid_pixels / total_pixels
+                ) * 100
+
+                # Calculate cloud coverage from QA60 if available
+                if "QA60" in bands:
+                    qa60 = bands["QA60"]
+                    cloud_mask = self._create_cloud_mask(qa60)
+                    quality_metrics["cloud_coverage"] = (
+                        np.sum(cloud_mask == 0) / cloud_mask.size
+                    ) * 100
+
+                # Calculate brightness statistics
+                if valid_pixels > 0:
+                    quality_metrics["brightness_mean"] = brightness_sum / valid_pixels
+                    variance = (brightness_sum_sq / valid_pixels) - (
+                        brightness_sum / valid_pixels
+                    ) ** 2
+                    quality_metrics["brightness_std"] = np.sqrt(max(variance, 0.0))
+
+                quality_metrics["has_data"] = valid_pixels > 0
+
+            return quality_metrics
+
+        except Exception as e:
+            logger.error(f"Failed to validate image quality: {e}")
+            return quality_metrics
+
+    def get_processing_summary(
+        self,
+        bands_a: Dict[str, np.ndarray],
+        bands_b: Dict[str, np.ndarray],
+        metadata_a: Dict[str, Any],
+        metadata_b: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Get summary of image processing results.
+
+        Args:
+            bands_a: Band arrays for Date A
+            bands_b: Band arrays for Date B
+            metadata_a: Metadata for Date A
+            metadata_b: Metadata for Date B
+
+        Returns:
+            Dictionary with processing summary
+        """
+        try:
+            summary = {
+                "date_a": metadata_a.get("date", "Unknown"),
+                "date_b": metadata_b.get("date", "Unknown"),
+                "cloud_coverage_a": 0,
+                "cloud_coverage_b": 0,
+                "brightness_difference": 0,
+                "processing_successful": True,
+                "warnings": [],
+            }
+
+            # Calculate cloud coverage
+            if "QA60" in bands_a:
+                qa60_a = bands_a["QA60"]
+                cloud_mask_a = self._create_cloud_mask(qa60_a)
+                summary["cloud_coverage_a"] = (
+                    np.sum(cloud_mask_a == 0) / cloud_mask_a.size
+                ) * 100
+
+            if "QA60" in bands_b:
+                qa60_b = bands_b["QA60"]
+                cloud_mask_b = self._create_cloud_mask(qa60_b)
+                summary["cloud_coverage_b"] = (
+                    np.sum(cloud_mask_b == 0) / cloud_mask_b.size
+                ) * 100
+
+            # Calculate brightness difference
+            summary["brightness_difference"] = self._calculate_brightness_difference(
+                bands_a, bands_b
+            )
+
+            # Add warnings
+            if summary["cloud_coverage_a"] > self.cloud_threshold:
+                summary["warnings"].append(
+                    f"Date A cloud coverage ({summary['cloud_coverage_a']:.1f}%) exceeds threshold"
+                )
+
+            if summary["cloud_coverage_b"] > self.cloud_threshold:
+                summary["warnings"].append(
+                    f"Date B cloud coverage ({summary['cloud_coverage_b']:.1f}%) exceeds threshold"
+                )
+
+            if summary["brightness_difference"] > 0.1:
+                summary["warnings"].append(
+                    f"Significant brightness difference ({summary['brightness_difference']:.2%}) detected"
+                )
+
+            return summary
+
+        except Exception as e:
+            logger.error(f"Failed to get processing summary: {e}")
+            return {"processing_successful": False, "error": str(e)}
