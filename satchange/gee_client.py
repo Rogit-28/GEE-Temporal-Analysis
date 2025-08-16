@@ -406,3 +406,173 @@ class GEEClient:
             bands: List of band names to download
             scale: Resolution in meters (10m for Sentinel-2)
 
+        Returns:
+            Tuple of (band_arrays, metadata)
+        """
+        import requests
+        import rasterio
+        from io import BytesIO
+
+        if bands is None:
+            bands = ["B4", "B3", "B8"]  # Default RGB + NIR
+
+        try:
+            # Get thumbnail URL for small areas
+            url = image.select(bands).getThumbURL(
+                {"region": bbox, "scale": scale, "format": "GEO_TIFF"}
+            )
+
+            # Download GeoTIFF with retry logic
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    response = requests.get(url, timeout=180)
+                    response.raise_for_status()
+                    break
+                except (
+                    requests.exceptions.Timeout,
+                    requests.exceptions.ConnectionError,
+                ) as e:
+                    if attempt < max_retries - 1:
+                        wait_time = 2**attempt * 5  # 5s, 10s, 20s
+                        logger.warning(
+                            f"Download attempt {attempt + 1} failed: {e}. Retrying in {wait_time}s..."
+                        )
+                        time.sleep(wait_time)
+                    else:
+                        raise
+                except requests.exceptions.HTTPError as e:
+                    if response.status_code == 429:  # Rate limit
+                        if attempt < max_retries - 1:
+                            wait_time = 2**attempt * 10  # 10s, 20s, 40s
+                            logger.warning(
+                                f"GEE rate limit hit. Retrying in {wait_time}s..."
+                            )
+                            time.sleep(wait_time)
+                        else:
+                            raise RateLimitError(
+                                f"GEE rate limit exceeded after {max_retries} retries"
+                            )
+                    elif response.status_code == 403:
+                        raise QuotaExceededError(
+                            "GEE compute quota exceeded. Try again later or request quota increase."
+                        )
+                    else:
+                        raise DownloadError(
+                            f"Image download failed with HTTP {response.status_code}: {e}"
+                        )
+
+            # Parse with rasterio
+            with rasterio.open(BytesIO(response.content)) as dataset:
+                band_arrays = {
+                    band: dataset.read(i + 1) for i, band in enumerate(bands)
+                }
+                metadata = {
+                    "transform": dataset.transform,
+                    "crs": dataset.crs,
+                    "bounds": dataset.bounds,
+                    "width": dataset.width,
+                    "height": dataset.height,
+                }
+
+            logger.info(f"Downloaded image with bands: {list(band_arrays.keys())}")
+            return band_arrays, metadata
+
+        except Exception as e:
+            logger.error(f"Failed to download image: {e}")
+            raise
+
+    def get_image_info(self, image: ee.Image) -> Dict[str, Any]:
+        """Get metadata for a single image.
+
+        Args:
+            image: ee.Image object
+
+        Returns:
+            Dictionary with image metadata
+        """
+        try:
+            info = image.getInfo()
+            properties = info.get("properties", {})
+
+            # Get date from system:time_start (epoch milliseconds)
+            time_start = properties.get("system:time_start")
+            date_str = None
+            if time_start:
+                from datetime import datetime, timezone
+
+                date_str = datetime.fromtimestamp(
+                    time_start / 1000, tz=timezone.utc
+                ).strftime("%Y-%m-%d")
+
+            return {
+                "id": info.get("id"),
+                "date": date_str,
+                "cloud_coverage": properties.get("CLOUDY_PIXEL_PERCENTAGE", 0),
+                "bands": info.get("bands", []),
+                "system:time_start": time_start,
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get image info: {e}")
+            return {}
+
+    def get_available_bands(self) -> List[str]:
+        """Get list of available Sentinel-2 bands.
+
+        Returns:
+            List of band names
+        """
+        try:
+            # Get a sample image to get band information
+            sample_image = ee.Image(
+                "COPERNICUS/S2_SR_HARMONIZED/20200101T000000_20200101T235959_T43PGP"
+            )
+            info = sample_image.getInfo()
+
+            bands = []
+            for band_info in info.get("bands", []):
+                bands.append(band_info.get("id"))
+
+            return sorted(bands)
+
+        except Exception as e:
+            logger.error(f"Failed to get available bands: {e}")
+            return []
+
+    def test_connection(self) -> bool:
+        """Test GEE connection with a simple query.
+
+        Returns:
+            True if connection successful, False otherwise
+        """
+        try:
+            # Simple test query
+            test_collection = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED").limit(1)
+            size = test_collection.size().getInfo()
+
+            logger.info(f"GEE connection test successful, found {size} images")
+            return True
+
+        except Exception as e:
+            logger.error(f"GEE connection test failed: {e}")
+            return False
+
+    def check_local_cloud(
+        self,
+        date: str,
+        center: Tuple[float, float],
+        size: int = 150,
+        resolution: int = 10,
+    ) -> Dict[str, Any]:
+        """Check local cloud coverage for a specific date WITHOUT downloading image.
+
+        Uses server-side SCL (Scene Classification Layer) band computation to check
+        cloud coverage at the specific area of interest, not just scene-level metadata.
+
+        Args:
+            date: Target date in 'YYYY-MM-DD' format
+            center: Tuple of (latitude, longitude)
+            size: AOI size in pixels (default 150 = 1.5km at 10m resolution)
+            resolution: Pixel resolution in meters (default 10)
+
