@@ -274,3 +274,135 @@ class GEEClient:
         if cloud_threshold is None:
             cloud_threshold = self.config.get("cloud_threshold", 20)
 
+        # Convert collection to sorted list (by cloud coverage, ascending)
+        scenes = collection.sort("CLOUDY_PIXEL_PERCENTAGE").getInfo()["features"]
+
+        if not scenes:
+            raise ValueError("No scenes found in collection")
+
+        # Parse dates from scene properties
+        def parse_date(scene):
+            # Try system:time_start first (milliseconds epoch)
+            time_start = scene["properties"].get("system:time_start")
+            if time_start:
+                try:
+                    return datetime.fromtimestamp(time_start / 1000)
+                except (ValueError, OSError, OverflowError):
+                    pass
+            # Fallback to SENSING_TIME string
+            date_str = scene["properties"].get("SENSING_TIME", "")
+            try:
+                return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                return datetime.min
+
+        def get_cloud_coverage(scene):
+            """Get cloud coverage percentage from scene properties."""
+            return scene["properties"].get("CLOUDY_PIXEL_PERCENTAGE", 0)
+
+        def find_valid_scene(candidates, label):
+            """Find the first scene that meets cloud threshold.
+
+            Args:
+                candidates: List of candidate scenes sorted by cloud coverage
+                label: Label for logging (e.g., 'Date A', 'Date B')
+
+            Returns:
+                Valid scene dict or None if no valid scene found
+            """
+            for scene in candidates:
+                cloud_pct = get_cloud_coverage(scene)
+                scene_date = parse_date(scene)
+                scene_id = scene.get("id", "unknown")
+
+                if cloud_pct <= cloud_threshold:
+                    logger.info(
+                        f"{label}: Selected scene {scene_id} "
+                        f"(date: {scene_date.date()}, cloud: {cloud_pct:.1f}%)"
+                    )
+                    return scene
+                else:
+                    logger.warning(
+                        f"{label}: Rejecting scene {scene_id} - "
+                        f"cloud coverage {cloud_pct:.1f}% exceeds threshold {cloud_threshold}%"
+                    )
+            return None
+
+        # Find Date A (near start)
+        date_a_window = [start_date, start_date + timedelta(days=30)]
+        date_a_candidates = [
+            s for s in scenes if date_a_window[0] <= parse_date(s) <= date_a_window[1]
+        ]
+
+        if not date_a_candidates:
+            # Expand window
+            date_a_window[1] = start_date + timedelta(days=90)
+            date_a_candidates = [
+                s
+                for s in scenes
+                if date_a_window[0] <= parse_date(s) <= date_a_window[1]
+            ]
+
+        if not date_a_candidates:
+            raise ValueError(f"No scenes found within {start_date} ± 90 days")
+
+        # Find valid Date A scene (reject cloudy scenes)
+        date_a_scene = find_valid_scene(date_a_candidates, "Date A")
+
+        if date_a_scene is None:
+            raise ValueError(
+                f"No scenes found for Date A within threshold. "
+                f"All {len(date_a_candidates)} candidates exceed {cloud_threshold}% cloud coverage."
+            )
+
+        # Find Date B (near end, minimum 6 months after Date A)
+        min_gap = parse_date(date_a_scene) + timedelta(days=180)
+        date_b_window = [max(min_gap, end_date - timedelta(days=30)), end_date]
+        date_b_candidates = [
+            s for s in scenes if date_b_window[0] <= parse_date(s) <= date_b_window[1]
+        ]
+
+        if not date_b_candidates:
+            date_b_window[0] = min_gap
+            date_b_candidates = [
+                s
+                for s in scenes
+                if date_b_window[0] <= parse_date(s) <= date_b_window[1]
+            ]
+
+        if not date_b_candidates:
+            raise ValueError(
+                f"No scenes found within {end_date} ± 90 days with minimum 6-month gap"
+            )
+
+        # Find valid Date B scene (reject cloudy scenes)
+        date_b_scene = find_valid_scene(date_b_candidates, "Date B")
+
+        if date_b_scene is None:
+            raise ValueError(
+                f"No scenes found for Date B within threshold. "
+                f"All {len(date_b_candidates)} candidates exceed {cloud_threshold}% cloud coverage."
+            )
+
+        logger.info(
+            f"Selected image pair - Date A: {parse_date(date_a_scene).date()}, "
+            f"Date B: {parse_date(date_b_scene).date()}"
+        )
+
+        return (ee.Image(date_a_scene["id"]), ee.Image(date_b_scene["id"]))
+
+    def download_image(
+        self,
+        image: ee.Image,
+        bbox: ee.Geometry.Polygon,
+        bands: List[str] = None,
+        scale: int = 10,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Download image bands from GEE as numpy arrays.
+
+        Args:
+            image: ee.Image object
+            bbox: ee.Geometry.Polygon defining AOI
+            bands: List of band names to download
+            scale: Resolution in meters (10m for Sentinel-2)
+
