@@ -576,3 +576,525 @@ class GEEClient:
             size: AOI size in pixels (default 150 = 1.5km at 10m resolution)
             resolution: Pixel resolution in meters (default 10)
 
+        Returns:
+            Dictionary with:
+                - date: The requested date
+                - image_id: Full GEE image ID (or None if not found)
+                - scene_cloud_pct: Scene-level cloud % from metadata
+                - local_cloud_pct: Local cloud % at AOI (computed from SCL)
+                - is_good: True if local_cloud_pct < 15%
+                - found: True if an image was found for that date
+        """
+        lat, lon = center
+
+        # Create AOI geometry
+        point = ee.Geometry.Point([lon, lat])
+        buffer_meters = (size * resolution) / 2  # Half the AOI width
+        region = point.buffer(buffer_meters).bounds()
+
+        # Query for images on the specific date
+        date_start = date
+        date_end_dt = datetime.strptime(date, "%Y-%m-%d") + timedelta(days=1)
+        date_end = date_end_dt.strftime("%Y-%m-%d")
+
+        collection = (
+            ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+            .filterBounds(point)
+            .filterDate(date_start, date_end)
+        )
+
+        count = collection.size().getInfo()
+
+        if count == 0:
+            logger.info(f"No image found for date {date}")
+            return {
+                "date": date,
+                "image_id": None,
+                "scene_cloud_pct": None,
+                "local_cloud_pct": None,
+                "is_good": False,
+                "found": False,
+            }
+
+        # Get the first (usually only) image for that date
+        image = ee.Image(collection.first())
+        image_info = image.getInfo()
+        image_id = image_info.get("id")
+        scene_cloud = image_info.get("properties", {}).get("CLOUDY_PIXEL_PERCENTAGE", 0)
+
+        # Compute local cloud coverage using SCL band
+        # SCL values: 3=cloud shadow, 8=cloud medium prob, 9=cloud high prob, 10=cirrus
+        scl = image.select("SCL")
+        cloud_mask = scl.eq(3).Or(scl.eq(8)).Or(scl.eq(9)).Or(scl.eq(10)).Or(scl.eq(11))
+
+        stats = cloud_mask.reduceRegion(
+            reducer=ee.Reducer.mean(),
+            geometry=region,
+            scale=20,  # Use 20m for SCL band (native resolution)
+            maxPixels=1e6,
+        )
+
+        scl_result = stats.get("SCL")
+        local_cloud_fraction = scl_result.getInfo() if scl_result is not None else None
+        local_cloud_pct = (
+            local_cloud_fraction * 100 if local_cloud_fraction is not None else 0
+        )
+
+        is_good = local_cloud_pct < 15.0
+
+        logger.info(
+            f"Date {date}: scene_cloud={scene_cloud:.1f}%, local_cloud={local_cloud_pct:.1f}%, good={is_good}"
+        )
+
+        return {
+            "date": date,
+            "image_id": image_id,
+            "scene_cloud_pct": round(scene_cloud, 1),
+            "local_cloud_pct": round(local_cloud_pct, 1),
+            "is_good": is_good,
+            "found": True,
+        }
+
+    def find_alternative_dates(
+        self,
+        target_date: str,
+        center: Tuple[float, float],
+        cloud_threshold: float = 15.0,
+        size: int = 150,
+        resolution: int = 10,
+    ) -> Dict[str, Any]:
+        """Find alternative dates with good local cloud coverage.
+
+        Performs incremental search: ±2 weeks -> ±1 month -> ±2 months -> ±3 months
+        until finding alternatives below the cloud threshold.
+
+        Args:
+            target_date: Original target date in 'YYYY-MM-DD' format
+            center: Tuple of (latitude, longitude)
+            cloud_threshold: Maximum acceptable local cloud % (default 15%)
+            size: AOI size in pixels
+            resolution: Pixel resolution in meters
+
+        Returns:
+            Dictionary with:
+                - target_date: The original requested date
+                - search_window: The window that found results (e.g., '±1 month')
+                - threshold_met: True if alternatives below threshold were found
+                - alternatives: List of alternatives sorted by local_cloud_pct, each with:
+                    - date, image_id, scene_cloud_pct, local_cloud_pct, is_recommended
+        """
+        lat, lon = center
+        point = ee.Geometry.Point([lon, lat])
+        buffer_meters = (size * resolution) / 2
+        region = point.buffer(buffer_meters).bounds()
+
+        target_dt = datetime.strptime(target_date, "%Y-%m-%d")
+
+        # Incremental search windows
+        search_windows = [
+            ("±2 weeks", 14),
+            ("±1 month", 30),
+            ("±2 months", 60),
+            ("±3 months", 90),
+        ]
+
+        for window_label, days in search_windows:
+            start_dt = target_dt - timedelta(days=days)
+            end_dt = target_dt + timedelta(days=days)
+
+            logger.info(
+                f"Searching {window_label}: {start_dt.date()} to {end_dt.date()}"
+            )
+
+            # Query images in window
+            collection = (
+                ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                .filterBounds(point)
+                .filterDate(start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d"))
+                .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 50))
+            )  # Pre-filter obvious bad ones
+
+            count = collection.size().getInfo()
+            if count == 0:
+                continue
+
+            # Get all images and compute local cloud for each
+            images_info = collection.getInfo()
+            alternatives = []
+
+            for feature in images_info.get("features", []):
+                image_id = feature.get("id")
+                props = feature.get("properties", {})
+                scene_cloud = props.get("CLOUDY_PIXEL_PERCENTAGE", 0)
+
+                # Parse date
+                time_start = props.get("system:time_start")
+                if time_start:
+                    img_date = datetime.fromtimestamp(time_start / 1000).strftime(
+                        "%Y-%m-%d"
+                    )
+                else:
+                    continue
+
+                # Compute local cloud coverage
+                image = ee.Image(image_id)
+                scl = image.select("SCL")
+                cloud_mask = (
+                    scl.eq(3).Or(scl.eq(8)).Or(scl.eq(9)).Or(scl.eq(10)).Or(scl.eq(11))
+                )
+
+                stats = cloud_mask.reduceRegion(
+                    reducer=ee.Reducer.mean(), geometry=region, scale=20, maxPixels=1e6
+                )
+
+                local_cloud_fraction = stats.get("SCL").getInfo()
+                local_cloud_pct = (
+                    local_cloud_fraction * 100
+                    if local_cloud_fraction is not None
+                    else 100
+                )
+
+                alternatives.append(
+                    {
+                        "date": img_date,
+                        "image_id": image_id,
+                        "scene_cloud_pct": round(scene_cloud, 1),
+                        "local_cloud_pct": round(local_cloud_pct, 1),
+                        "is_recommended": False,
+                    }
+                )
+
+            # Sort by local cloud percentage
+            alternatives.sort(key=lambda x: x["local_cloud_pct"])
+
+            # Check if any meet threshold
+            good_alternatives = [
+                a for a in alternatives if a["local_cloud_pct"] < cloud_threshold
+            ]
+
+            if good_alternatives:
+                # Mark the best one as recommended
+                alternatives[0]["is_recommended"] = True
+
+                return {
+                    "target_date": target_date,
+                    "search_window": window_label,
+                    "threshold_met": True,
+                    "alternatives": alternatives[:10],  # Return top 10
+                }
+
+        # No good alternatives found within ±3 months
+        # Return best available anyway with threshold_met=False
+        logger.warning(
+            f"No alternatives below {cloud_threshold}% found within ±3 months"
+        )
+
+        # Do a final search to get the best available
+        start_dt = target_dt - timedelta(days=90)
+        end_dt = target_dt + timedelta(days=90)
+
+        collection = (
+            ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+            .filterBounds(point)
+            .filterDate(start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d"))
+            .sort("CLOUDY_PIXEL_PERCENTAGE")
+            .limit(10)
+        )
+
+        images_info = collection.getInfo()
+        alternatives = []
+
+        for feature in images_info.get("features", []):
+            image_id = feature.get("id")
+            props = feature.get("properties", {})
+            scene_cloud = props.get("CLOUDY_PIXEL_PERCENTAGE", 0)
+
+            time_start = props.get("system:time_start")
+            if time_start:
+                img_date = datetime.fromtimestamp(time_start / 1000).strftime(
+                    "%Y-%m-%d"
+                )
+            else:
+                continue
+
+            # Compute local cloud
+            image = ee.Image(image_id)
+            scl = image.select("SCL")
+            cloud_mask = (
+                scl.eq(3).Or(scl.eq(8)).Or(scl.eq(9)).Or(scl.eq(10)).Or(scl.eq(11))
+            )
+
+            stats = cloud_mask.reduceRegion(
+                reducer=ee.Reducer.mean(), geometry=region, scale=20, maxPixels=1e6
+            )
+
+            local_cloud_fraction = stats.get("SCL").getInfo()
+            local_cloud_pct = (
+                local_cloud_fraction * 100 if local_cloud_fraction is not None else 100
+            )
+
+            alternatives.append(
+                {
+                    "date": img_date,
+                    "image_id": image_id,
+                    "scene_cloud_pct": round(scene_cloud, 1),
+                    "local_cloud_pct": round(local_cloud_pct, 1),
+                    "is_recommended": False,
+                }
+            )
+
+        alternatives.sort(key=lambda x: x["local_cloud_pct"])
+        if alternatives:
+            alternatives[0]["is_recommended"] = True
+
+        return {
+            "target_date": target_date,
+            "search_window": "±3 months (no good alternatives)",
+            "threshold_met": False,
+            "alternatives": alternatives,
+        }
+
+    def create_temporal_composite(
+        self,
+        center: Tuple[float, float],
+        target_date: str,
+        window_days: int = 90,
+        max_scenes: int = 5,
+        size: int = 150,
+        resolution: int = 10,
+    ) -> Optional[ee.Image]:
+        """Create median temporal composite from clearest scenes in time window.
+
+        Collects the clearest scenes within the specified window around the target
+        date and produces a median composite. This reduces cloud artifacts while
+        preserving spatial detail.
+
+        Args:
+            center: Tuple of (latitude, longitude)
+            target_date: Center date for the compositing window in 'YYYY-MM-DD'
+            window_days: Half-window size in days (±)
+            max_scenes: Maximum number of scenes to include in composite
+            size: AOI size in pixels
+            resolution: Pixel resolution in meters
+
+        Returns:
+            ee.Image median composite, or None if fewer than 2 scenes available
+        """
+        lat, lon = center
+        target_dt = datetime.strptime(target_date, "%Y-%m-%d")
+
+        start_dt = target_dt - timedelta(days=window_days)
+        end_dt = target_dt + timedelta(days=window_days)
+
+        # Create bounding box for spatial filtering
+        bbox = self.create_bbox(lat, lon, size, resolution)
+
+        # Query and filter collection: sort by cloud coverage, take clearest
+        collection = (
+            ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+            .filterBounds(bbox)
+            .filterDate(
+                start_dt.strftime("%Y-%m-%d"),
+                end_dt.strftime("%Y-%m-%d"),
+            )
+            .sort("CLOUDY_PIXEL_PERCENTAGE")
+            .limit(max_scenes)
+        )
+
+        count = collection.size().getInfo()
+
+        if count < 2:
+            logger.warning(
+                f"Temporal composite: only {count} scene(s) found in "
+                f"±{window_days} day window — need at least 2"
+            )
+            return None
+
+        logger.info(
+            f"Creating temporal composite from {count} clearest scenes "
+            f"({start_dt.date()} to {end_dt.date()})"
+        )
+
+        return collection.median()
+
+    def handle_cloudy_scenes(
+        self,
+        date: str,
+        center: Tuple[float, float],
+        size: int = 150,
+        max_cloud_threshold: int = 20,
+        resolution: int = 10,
+    ) -> Dict[str, Any]:
+        """Handle cases where no clear scenes are available using graduated fallback.
+
+        Applies three strategies in sequence until usable imagery is found:
+
+        1. **Graduated threshold** — Relax the cloud-cover limit step by step
+           (initial → 40% → 60%) and re-check the target date.
+        2. **Expanded temporal window** — Search ±30 / ±60 / ±90 days for an
+           alternative date with local cloud coverage under 60%.
+        3. **Temporal compositing** — Build a median composite from the five
+           clearest scenes within ±90 days.
+
+        Args:
+            date: Target date in 'YYYY-MM-DD' format
+            center: Tuple of (latitude, longitude)
+            size: AOI size in pixels
+            max_cloud_threshold: Initial maximum cloud threshold (%)
+            resolution: Pixel resolution in meters
+
+        Returns:
+            Dictionary with:
+                - found: bool — whether usable imagery was obtained
+                - strategy_used: str — which fallback strategy succeeded
+                - image: ee.Image or None — the usable image (single or composite)
+                - image_id: str or None — image ID (None for composites)
+                - date: str — image date, or 'composite' for composites
+                - local_cloud_pct: float — cloud percentage of the result
+                - details: dict — strategy-specific details
+        """
+        _not_found: Dict[str, Any] = {
+            "found": False,
+            "strategy_used": "none",
+            "image": None,
+            "image_id": None,
+            "date": date,
+            "local_cloud_pct": 100.0,
+            "details": {},
+        }
+
+        # ------------------------------------------------------------------
+        # Strategy 1: Graduated cloud-threshold relaxation on the target date
+        # ------------------------------------------------------------------
+        thresholds = sorted(set([max_cloud_threshold, 40, 60]))
+        logger.info(f"Strategy 1 — Graduated threshold: trying {thresholds} on {date}")
+
+        for threshold in thresholds:
+            result = self.check_local_cloud(date, center, size, resolution)
+
+            if not result["found"]:
+                # No image exists for this date at all — skip to Strategy 2
+                logger.info(f"No image found for {date}; skipping remaining thresholds")
+                break
+
+            local_pct = result["local_cloud_pct"]
+            if local_pct is not None and local_pct < threshold:
+                logger.info(
+                    f"Strategy 1 succeeded: {date} has {local_pct:.1f}% local cloud "
+                    f"(threshold relaxed to {threshold}%)"
+                )
+                return {
+                    "found": True,
+                    "strategy_used": "increased_threshold",
+                    "image": ee.Image(result["image_id"]),
+                    "image_id": result["image_id"],
+                    "date": date,
+                    "local_cloud_pct": local_pct,
+                    "details": {
+                        "original_threshold": max_cloud_threshold,
+                        "accepted_threshold": threshold,
+                        "scene_cloud_pct": result["scene_cloud_pct"],
+                    },
+                }
+
+            logger.info(
+                f"Threshold {threshold}%: local cloud {local_pct:.1f}% — not under threshold"
+            )
+
+        # ------------------------------------------------------------------
+        # Strategy 2: Expanded temporal window via find_alternative_dates
+        # ------------------------------------------------------------------
+        expanded_windows = [30, 60, 90]
+        logger.info(
+            f"Strategy 2 — Expanded temporal window: trying ±{expanded_windows} days"
+        )
+
+        for window_days in expanded_windows:
+            # find_alternative_dates uses its own incremental windows, but we
+            # call it with a cloud threshold of 60% (the most relaxed
+            # single-scene limit we accept) and let it search up to the window.
+            alt_result = self.find_alternative_dates(
+                target_date=date,
+                center=center,
+                cloud_threshold=60.0,
+                size=size,
+                resolution=resolution,
+            )
+
+            if alt_result["threshold_met"] and alt_result["alternatives"]:
+                best = alt_result["alternatives"][0]
+                logger.info(
+                    f"Strategy 2 succeeded: alternative {best['date']} has "
+                    f"{best['local_cloud_pct']:.1f}% local cloud "
+                    f"(window ±{window_days} days)"
+                )
+                return {
+                    "found": True,
+                    "strategy_used": "expanded_window",
+                    "image": ee.Image(best["image_id"]),
+                    "image_id": best["image_id"],
+                    "date": best["date"],
+                    "local_cloud_pct": best["local_cloud_pct"],
+                    "details": {
+                        "original_date": date,
+                        "window_days": window_days,
+                        "search_window": alt_result["search_window"],
+                        "alternatives_checked": len(alt_result["alternatives"]),
+                        "scene_cloud_pct": best["scene_cloud_pct"],
+                    },
+                }
+
+            # If alternatives exist but none met the 60% threshold, the next
+            # wider window won't help since find_alternative_dates already
+            # searches up to ±3 months internally. Break early.
+            if alt_result["alternatives"]:
+                logger.info(
+                    "Alternatives found but none under 60% local cloud — "
+                    "moving to Strategy 3"
+                )
+                break
+
+        # ------------------------------------------------------------------
+        # Strategy 3: Temporal compositing (median of clearest scenes)
+        # ------------------------------------------------------------------
+        logger.info(
+            "Strategy 3 — Temporal compositing: median of up to 5 clearest "
+            "scenes within ±90 days"
+        )
+
+        composite = self.create_temporal_composite(
+            center=center,
+            target_date=date,
+            window_days=90,
+            max_scenes=5,
+            size=size,
+            resolution=resolution,
+        )
+
+        if composite is not None:
+            logger.info(
+                "Strategy 3 succeeded: temporal composite created from ±90 day window"
+            )
+            return {
+                "found": True,
+                "strategy_used": "temporal_composite",
+                "image": composite,
+                "image_id": None,
+                "date": "composite",
+                "local_cloud_pct": 0.0,  # composite has no single-scene cloud metric
+                "details": {
+                    "original_date": date,
+                    "window_days": 90,
+                    "max_scenes": 5,
+                    "method": "median",
+                },
+            }
+
+        # ------------------------------------------------------------------
+        # All strategies exhausted
+        # ------------------------------------------------------------------
+        logger.warning(
+            f"All fallback strategies exhausted for {date} at "
+            f"{center}. No usable imagery found."
+        )
+        return _not_found
