@@ -408,3 +408,283 @@ class ChangeDetector:
             classification: Integer classification array from classify_changes()
             pixel_area_m2: Area per pixel in square meters (10m resolution = 100m²)
 
+        Returns:
+            Dictionary with statistics
+        """
+        try:
+            total_pixels = classification.size
+
+            # Define class names
+            class_names = {
+                0: "no_change",
+                1: "vegetation_growth",
+                2: "vegetation_loss",
+                3: "water_expansion",
+                4: "water_reduction",
+                5: "urban_development",
+                6: "urban_decline",
+                7: "ambiguous",
+            }
+
+            stats = {}
+            for class_id, class_name in class_names.items():
+                count = np.sum(classification == class_id)
+                percent = (count / total_pixels) * 100
+                area_km2 = (count * pixel_area_m2) / 1e6
+
+                stats[class_name] = {
+                    "pixels": int(count),
+                    "percent": round(percent, 2),
+                    "area_km2": round(area_km2, 4),
+                }
+
+            # Total change percentage (all non-zero classes)
+            changed_pixels = np.sum(classification > 0)
+            stats["total_change"] = {
+                "pixels": int(changed_pixels),
+                "percent": round((changed_pixels / total_pixels) * 100, 2),
+                "area_km2": round((changed_pixels * pixel_area_m2) / 1e6, 4),
+            }
+
+            # Add change type breakdown
+            stats["change_types"] = {}
+            for change_type in ["vegetation", "water", "urban"]:
+                type_pixels = 0
+                type_area = 0.0
+
+                if change_type == "vegetation":
+                    type_pixels = (
+                        stats["vegetation_growth"]["pixels"]
+                        + stats["vegetation_loss"]["pixels"]
+                    )
+                    type_area = (
+                        stats["vegetation_growth"]["area_km2"]
+                        + stats["vegetation_loss"]["area_km2"]
+                    )
+                elif change_type == "water":
+                    type_pixels = (
+                        stats["water_expansion"]["pixels"]
+                        + stats["water_reduction"]["pixels"]
+                    )
+                    type_area = (
+                        stats["water_expansion"]["area_km2"]
+                        + stats["water_reduction"]["area_km2"]
+                    )
+                elif change_type == "urban":
+                    type_pixels = (
+                        stats["urban_development"]["pixels"]
+                        + stats["urban_decline"]["pixels"]
+                    )
+                    type_area = (
+                        stats["urban_development"]["area_km2"]
+                        + stats["urban_decline"]["area_km2"]
+                    )
+
+                stats["change_types"][change_type] = {
+                    "pixels": int(type_pixels),
+                    "percent": round((type_pixels / total_pixels) * 100, 2),
+                    "area_km2": round(type_area, 4),
+                }
+
+            return stats
+
+        except Exception as e:
+            logger.error(f"Statistics computation failed: {e}")
+            raise ChangeDetectionError(f"Statistics computation failed: {e}")
+
+    def detect_changes_by_type(
+        self,
+        bands_a: Dict[str, np.ndarray],
+        bands_b: Dict[str, np.ndarray],
+        change_type: str,
+    ) -> Dict[str, Any]:
+        """Detect changes for a specific change type.
+
+        Args:
+            bands_a: Band arrays for Date A
+            bands_b: Band arrays for Date B
+            change_type: Type of change to detect ('vegetation', 'water', 'urban')
+
+        Returns:
+            Dictionary with change detection results
+        """
+        try:
+            logger.info(f"Detecting {change_type} changes")
+
+            if change_type == "vegetation":
+                return self.detect_vegetation_change(bands_a, bands_b)
+            elif change_type == "water":
+                return self.detect_water_change(bands_a, bands_b)
+            elif change_type == "urban":
+                return self.detect_urban_change(bands_a, bands_b)
+            else:
+                raise ValueError(f"Unknown change type: {change_type}")
+
+        except Exception as e:
+            logger.error(f"Change detection for {change_type} failed: {e}")
+            raise ChangeDetectionError(
+                f"Change detection for {change_type} failed: {e}"
+            )
+
+    def get_change_summary(
+        self,
+        bands_a: Dict[str, np.ndarray],
+        bands_b: Dict[str, np.ndarray],
+        change_type: str = "all",
+    ) -> Dict[str, Any]:
+        """Get a summary of detected changes.
+
+        Args:
+            bands_a: Band arrays for Date A
+            bands_b: Band arrays for Date B
+            change_type: Type of change to detect ('vegetation', 'water', 'urban', 'all')
+
+        Returns:
+            Dictionary with change summary
+        """
+        try:
+            if change_type == "all":
+                change_results = self.detect_all_changes(bands_a, bands_b)
+                classification = self.classify_changes(change_results)
+                stats = self.compute_change_statistics(classification)
+
+                return {
+                    "change_type": "all",
+                    "change_results": change_results,
+                    "classification": classification,
+                    "statistics": stats,
+                    "summary": self._generate_summary_text(stats),
+                }
+            else:
+                change_results = self.detect_changes_by_type(
+                    bands_a, bands_b, change_type
+                )
+                stats = self._compute_single_type_stats(change_results)
+
+                return {
+                    "change_type": change_type,
+                    "change_results": change_results,
+                    "statistics": stats,
+                    "summary": self._generate_single_type_summary_text(
+                        change_type, stats
+                    ),
+                }
+
+        except Exception as e:
+            logger.error(f"Change summary generation failed: {e}")
+            raise ChangeDetectionError(f"Change summary generation failed: {e}")
+
+    def _compute_single_type_stats(
+        self, change_results: Dict[str, np.ndarray]
+    ) -> Dict[str, Any]:
+        """Compute statistics for a single change type.
+
+        Args:
+            change_results: Change detection results for a single type
+
+        Returns:
+            Dictionary with statistics
+        """
+        try:
+            change_mask = change_results["change_mask"]
+            total_pixels = change_mask.size
+            changed_pixels = np.sum(change_mask)
+
+            stats = {
+                "total_pixels": int(total_pixels),
+                "changed_pixels": int(changed_pixels),
+                "change_percentage": round((changed_pixels / total_pixels) * 100, 2),
+                "change_type": change_results["change_type"],
+            }
+
+            # Add specific statistics based on change type
+            if change_results["change_type"] == "vegetation":
+                stats["growth_pixels"] = int(np.sum(change_results["growth_mask"]))
+                stats["loss_pixels"] = int(np.sum(change_results["loss_mask"]))
+            elif change_results["change_type"] == "water":
+                stats["expansion_pixels"] = int(
+                    np.sum(change_results["expansion_mask"])
+                )
+                stats["reduction_pixels"] = int(
+                    np.sum(change_results["reduction_mask"])
+                )
+            elif change_results["change_type"] == "urban":
+                if "development_mask" in change_results:
+                    stats["development_pixels"] = int(
+                        np.sum(change_results["development_mask"])
+                    )
+                if "decline_mask" in change_results:
+                    stats["decline_pixels"] = int(
+                        np.sum(change_results["decline_mask"])
+                    )
+
+            return stats
+
+        except Exception as e:
+            logger.error(f"Single type statistics computation failed: {e}")
+            raise ChangeDetectionError(
+                f"Single type statistics computation failed: {e}"
+            )
+
+    def _generate_summary_text(self, stats: Dict[str, Any]) -> str:
+        """Generate human-readable summary text.
+
+        Args:
+            stats: Statistics dictionary
+
+        Returns:
+            Summary text
+        """
+        try:
+            summary_lines = [
+                f"Total area changed: {stats['total_change']['percent']}%",
+                f"Vegetation changes: {stats['change_types']['vegetation']['percent']}% (growth: {stats['vegetation_growth']['percent']}%, loss: {stats['vegetation_loss']['percent']}%)",
+                f"Water changes: {stats['change_types']['water']['percent']}% (expansion: {stats['water_expansion']['percent']}%, reduction: {stats['water_reduction']['percent']}%)",
+                f"Urban changes: {stats['change_types']['urban']['percent']}% (development: {stats['urban_development']['percent']}%, decline: {stats['urban_decline']['percent']}%)",
+            ]
+
+            return "\n".join(summary_lines)
+
+        except Exception as e:
+            logger.error(f"Summary text generation failed: {e}")
+            return "Summary generation failed"
+
+    def _generate_single_type_summary_text(
+        self, change_type: str, stats: Dict[str, Any]
+    ) -> str:
+        """Generate summary text for single change type.
+
+        Args:
+            change_type: Type of change
+            stats: Statistics dictionary
+
+        Returns:
+            Summary text
+        """
+        try:
+            if change_type == "vegetation":
+                summary_lines = [
+                    f"Vegetation changes detected: {stats['change_percentage']}%",
+                    f"Vegetation growth: {stats['growth_pixels']} pixels",
+                    f"Vegetation loss: {stats['loss_pixels']} pixels",
+                ]
+            elif change_type == "water":
+                summary_lines = [
+                    f"Water changes detected: {stats['change_percentage']}%",
+                    f"Water expansion: {stats['expansion_pixels']} pixels",
+                    f"Water reduction: {stats['reduction_pixels']} pixels",
+                ]
+            elif change_type == "urban":
+                summary_lines = [
+                    f"Urban changes detected: {stats['change_percentage']}%",
+                    f"Urban development: {stats.get('development_pixels', 0)} pixels",
+                    f"Urban decline: {stats.get('decline_pixels', 0)} pixels",
+                ]
+            else:
+                summary_lines = [f"Unknown change type: {change_type}"]
+
+            return "\n".join(summary_lines)
+
+        except Exception as e:
+            logger.error(f"Single type summary text generation failed: {e}")
+            return f"Summary generation failed for {change_type}"
