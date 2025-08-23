@@ -2136,3 +2136,266 @@ class GeoTIFFExporter:
         """Initialize GeoTIFF exporter."""
         pass
 
+    def export_classification(
+        self,
+        classification: np.ndarray,
+        metadata: Dict[str, Any],
+        output_path: str,
+        bands: Optional[Dict[str, np.ndarray]] = None,
+    ) -> None:
+        """Export classification map as GeoTIFF with spatial reference.
+
+        Exports a 4-band GeoTIFF when RGB bands are provided:
+            - Band 1: Red (B4)
+            - Band 2: Green (B3)
+            - Band 3: Blue (B2)
+            - Band 4: Classification/change mask
+
+        Falls back to single-band classification if bands are not provided.
+
+        Args:
+            classification: Classification array
+            metadata: Spatial metadata from download
+            output_path: Path to save GeoTIFF
+            bands: Optional dictionary with band arrays (B4, B3, B2 for RGB)
+        """
+        try:
+            import rasterio
+            from rasterio.transform import from_bounds
+
+            logger.info(f"Exporting GeoTIFF: {output_path}")
+
+            height, width = classification.shape
+
+            # Determine if we're exporting 4-band (RGB + mask) or single-band
+            export_4band = bands is not None and "B4" in bands and "B3" in bands
+
+            if export_4band:
+                logger.info("Exporting 4-band GeoTIFF (RGB + classification mask)")
+                band_count = 4
+                # Use uint8 for RGB bands compatibility
+                dtype = np.uint8
+            else:
+                logger.info("Exporting single-band GeoTIFF (classification only)")
+                band_count = 1
+                dtype = classification.dtype
+
+            # Create transform if not provided
+            if "transform" not in metadata:
+                # Calculate approximate transform from bounds
+                bounds = metadata.get(
+                    "bounds",
+                    {
+                        "left": metadata.get("center_lon", 0) - 0.01,
+                        "right": metadata.get("center_lon", 0) + 0.01,
+                        "bottom": metadata.get("center_lat", 0) - 0.01,
+                        "top": metadata.get("center_lat", 0) + 0.01,
+                    },
+                )
+
+                transform = from_bounds(
+                    bounds["left"],
+                    bounds["bottom"],
+                    bounds["right"],
+                    bounds["top"],
+                    width,
+                    height,
+                )
+            else:
+                transform = metadata["transform"]
+
+            # Create CRS if not provided
+            if "crs" not in metadata:
+                crs = "EPSG:4326"  # WGS84
+            else:
+                crs = metadata["crs"]
+
+            # Create rasterio dataset
+            with rasterio.open(
+                output_path,
+                "w",
+                driver="GTiff",
+                height=height,
+                width=width,
+                count=band_count,
+                dtype=dtype,
+                crs=crs,
+                transform=transform,
+                compress="lzw",
+                tiled=True,
+            ) as dst:
+                if export_4band:
+                    # Normalize and write RGB bands
+                    red = self._normalize_band(bands["B4"])
+                    green = self._normalize_band(bands["B3"])
+                    # Use B2 if available, otherwise use B4 as fallback
+                    blue = self._normalize_band(bands.get("B2", bands["B4"]))
+
+                    dst.write(red, 1)  # Band 1: Red (B4)
+                    dst.write(green, 2)  # Band 2: Green (B3)
+                    dst.write(blue, 3)  # Band 3: Blue (B2)
+                    dst.write(
+                        classification.astype(np.uint8), 4
+                    )  # Band 4: Classification mask
+
+                    # Set band descriptions
+                    dst.set_band_description(1, "Red (B4)")
+                    dst.set_band_description(2, "Green (B3)")
+                    dst.set_band_description(3, "Blue (B2)")
+                    dst.set_band_description(4, "Classification/Change Mask")
+
+                    # Add metadata tags
+                    dst.update_tags(
+                        band_1="Red (Sentinel-2 B4)",
+                        band_2="Green (Sentinel-2 B3)",
+                        band_3="Blue (Sentinel-2 B2)",
+                        band_4="Classification mask",
+                        change_classes="0:no_change,1:veg_growth,2:veg_loss,3:water_expand,4:water_reduce,5:urban_dev,6:urban_decline,7:ambiguous",
+                        description="SatChange 4-band GeoTIFF (RGB + classification)",
+                        software="SatChange CLI",
+                        version="1.0.0",
+                    )
+                else:
+                    dst.write(classification, 1)
+
+                    # Add metadata tags for single-band export
+                    dst.update_tags(
+                        1,
+                        change_classes="0:no_change,1:veg_growth,2:veg_loss,3:water_expand,4:water_reduce,5:urban_dev,6:urban_decline,7:ambiguous",
+                        description="SatChange classification results",
+                        software="SatChange CLI",
+                        version="1.0.0",
+                    )
+
+            logger.info(f"GeoTIFF exported successfully: {output_path}")
+
+        except Exception as e:
+            logger.error(f"GeoTIFF export failed: {e}")
+            raise VisualizationError(f"GeoTIFF export failed: {e}")
+
+    def _normalize_band(self, band: np.ndarray) -> np.ndarray:
+        """Normalize band values to 0-255 range for GeoTIFF export.
+
+        Args:
+            band: Input band array
+
+        Returns:
+            Normalized band as uint8 (0-255)
+        """
+        if band.max() <= 1.0:
+            # Already normalized to 0-1, scale to 0-255
+            return (band * 255).astype(np.uint8)
+        else:
+            # Normalize based on min/max values
+            band_float = band.astype(float)
+            band_min = band_float.min()
+            band_max = band_float.max()
+            if band_max - band_min > 0:
+                normalized = (band_float - band_min) / (band_max - band_min)
+            else:
+                normalized = np.zeros_like(band_float)
+            return (normalized * 255).astype(np.uint8)
+
+
+class VisualizationManager:
+    """Main visualization manager that coordinates all visualization outputs."""
+
+    def __init__(self, emboss_intensity: float = 1.0):
+        """Initialize visualization manager.
+
+        Args:
+            emboss_intensity: Emboss effect strength
+        """
+        self.static_visualizer = StaticVisualizer(emboss_intensity)
+        self.interactive_visualizer = InteractiveVisualizer(emboss_intensity)
+        self.geotiff_exporter = GeoTIFFExporter()
+
+    def generate_all_outputs(
+        self,
+        bands_a: Dict[str, np.ndarray],
+        bands_b: Dict[str, np.ndarray],
+        classification: np.ndarray,
+        stats: Dict[str, Any],
+        metadata: Dict[str, Any],
+        center_lat: float,
+        center_lon: float,
+        output_dir: str,
+        formats: List[str] = None,
+        output_prefix: str = None,
+    ) -> Dict[str, str]:
+        """Generate all visualization outputs.
+
+        Args:
+            bands_a: Band arrays for Date A
+            bands_b: Band arrays for Date B
+            classification: Classification map
+            stats: Statistics dictionary
+            metadata: Spatial metadata
+            center_lat: AOI center latitude
+            center_lon: AOI center longitude
+            output_dir: Output directory path
+            formats: List of formats to generate ['static', 'interactive', 'geotiff']
+            output_prefix: Optional prefix for output filenames
+
+        Returns:
+            Dictionary mapping format to output file path
+        """
+        try:
+            logger.info("Generating all visualization outputs")
+
+            if formats is None:
+                formats = ["static", "interactive", "geotiff"]
+
+            # Default prefix if not provided
+            prefix = output_prefix if output_prefix else "output"
+
+            # Apply emboss effect
+            from .change_detector import ChangeDetector
+
+            detector = ChangeDetector()
+            change_mask = classification > 0
+            embossed = self.static_visualizer.emboss_renderer.apply_emboss_effect(
+                change_mask
+            )
+
+            output_files = {}
+
+            # Generate static visualization
+            if "static" in formats:
+                static_path = os.path.join(output_dir, f"{prefix}_visualization.png")
+                self.static_visualizer.generate_comparison_plot(
+                    bands_a, bands_b, classification, embossed, static_path
+                )
+                output_files["static"] = static_path
+
+            # Generate interactive HTML
+            if "interactive" in formats:
+                interactive_path = os.path.join(
+                    output_dir, f"{prefix}_interactive.html"
+                )
+                self.interactive_visualizer.generate_interactive_html(
+                    bands_a,
+                    bands_b,
+                    classification,
+                    embossed,
+                    stats,
+                    center_lat,
+                    center_lon,
+                    interactive_path,
+                )
+                output_files["interactive"] = interactive_path
+
+            # Generate GeoTIFF (4-band: RGB + classification mask)
+            if "geotiff" in formats:
+                geotiff_path = os.path.join(output_dir, f"{prefix}_classification.tif")
+                self.geotiff_exporter.export_classification(
+                    classification, metadata, geotiff_path, bands=bands_b
+                )
+                output_files["geotiff"] = geotiff_path
+
+            logger.info(f"Generated {len(output_files)} visualization outputs")
+            return output_files
+
+        except Exception as e:
+            logger.error(f"Visualization generation failed: {e}")
+            raise VisualizationError(f"Visualization generation failed: {e}")
