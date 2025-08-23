@@ -311,3 +311,233 @@ class InteractiveVisualizer:
         """
         self.emboss_renderer = EmbossRenderer(emboss_intensity)
 
+    def array_to_base64(self, array: np.ndarray) -> str:
+        """Convert numpy array to base64-encoded PNG data URI.
+
+        Args:
+            array: Input array
+
+        Returns:
+            Base64-encoded data URI
+        """
+        try:
+            # Normalize to 0-255 if needed
+            if array.dtype != np.uint8 and array.max() <= 1.0 and array.min() >= 0.0:
+                array = (array * 255).astype(np.uint8)
+            elif array.dtype != np.uint8:
+                array = array.astype(np.uint8)
+
+            # Convert to PIL Image
+            if len(array.shape) == 2:  # Grayscale
+                img = Image.fromarray(array, mode="L")
+            else:  # RGB/RGBA
+                img = Image.fromarray(array)
+
+            # Encode as PNG in memory
+            buffer = BytesIO()
+            try:
+                img.save(buffer, format="PNG")
+                buffer.seek(0)
+
+                # Convert to base64
+                img_base64 = base64.b64encode(buffer.read()).decode()
+
+                return f"data:image/png;base64,{img_base64}"
+            finally:
+                buffer.close()
+
+        except Exception as e:
+            logger.error(f"Base64 conversion failed: {e}")
+            raise VisualizationError(f"Base64 conversion failed: {e}")
+
+    def create_rgb_composite(self, bands: Dict[str, np.ndarray]) -> np.ndarray:
+        """Create RGB composite from satellite bands.
+
+        Args:
+            bands: Dictionary with band arrays
+
+        Returns:
+            RGB composite array (H, W, 3)
+        """
+        try:
+            # Create RGB composite (B4=Red, B3=Green, B2=Blue)
+            if "B2" in bands:
+                rgb = np.dstack(
+                    [
+                        bands["B4"],  # Red
+                        bands["B3"],  # Green
+                        bands["B2"],  # Blue
+                    ]
+                )
+            else:
+                # If B2 not available, create grayscale from RGB bands
+                rgb = np.dstack(
+                    [
+                        bands["B4"],  # Red
+                        bands["B3"],  # Green
+                        bands["B4"],  # Use Red as Blue substitute
+                    ]
+                )
+
+            # Normalize to 0-255
+            rgb_norm = self._normalize_image(rgb)
+
+            return rgb_norm
+
+        except Exception as e:
+            logger.error(f"RGB composite creation failed: {e}")
+            raise VisualizationError(f"RGB composite creation failed: {e}")
+
+    def _normalize_image(self, image: np.ndarray) -> np.ndarray:
+        """Normalize image to 0-255 range.
+
+        Args:
+            image: Input image array
+
+        Returns:
+            Normalized image array
+        """
+        try:
+            img_min = image.min()
+            img_max = image.max()
+
+            if img_max == img_min:
+                # Constant image — return uniform array
+                return np.zeros_like(image, dtype=np.uint8)
+            elif img_max <= 1.0 and img_min >= 0.0:
+                # Already normalized to [0, 1]
+                return (image * 255).astype(np.uint8)
+            else:
+                image_norm = image.astype(float)
+                image_norm = (image_norm - img_min) / (img_max - img_min)
+                return (image_norm * 255).astype(np.uint8)
+
+        except Exception as e:
+            logger.error(f"Image normalization failed: {e}")
+            raise VisualizationError(f"Image normalization failed: {e}")
+
+    def generate_interactive_html(
+        self,
+        bands_a: Dict[str, np.ndarray],
+        bands_b: Dict[str, np.ndarray],
+        classification: np.ndarray,
+        embossed: np.ndarray,
+        stats: Dict[str, Any],
+        center_lat: float,
+        center_lon: float,
+        output_path: str,
+    ) -> None:
+        """Generate interactive HTML viewer with Leaflet.js.
+
+        Args:
+            bands_a: Band arrays for Date A
+            bands_b: Band arrays for Date B
+            classification: Classification map
+            embossed: Embossed mask
+            stats: Statistics dictionary
+            center_lat: AOI center latitude
+            center_lon: AOI center longitude
+            output_path: Path to save HTML file
+        """
+        try:
+            logger.info(f"Generating interactive HTML: {output_path}")
+
+            # Create image composites
+            rgb_a = self.create_rgb_composite(bands_a)
+            rgb_b = self.create_rgb_composite(bands_b)
+            overlay = self.emboss_renderer.create_color_coded_overlay(
+                classification, embossed
+            )
+
+            # Composite overlay on base image
+            composite = rgb_b.copy()
+            # Alpha blend
+            alpha = overlay[:, :, 3:4] / 255.0
+            composite = (composite * (1 - alpha) + overlay[:, :, :3] * alpha).astype(
+                np.uint8
+            )
+
+            # Convert to base64
+            img_a_uri = self.array_to_base64(rgb_a)
+            img_b_uri = self.array_to_base64(rgb_b)
+            img_overlay_uri = self.array_to_base64(composite)
+
+            # Get dates from stats if available
+            date_a = stats.get("date_a", {}).get("date", "Unknown")
+            date_b = stats.get("date_b", {}).get("date", "Unknown")
+
+            # HTML template
+            html_template = self._get_html_template()
+
+            # Render template
+            from jinja2 import Environment
+
+            env = Environment(autoescape=True)
+            template = env.from_string(html_template)
+            html_content = template.render(
+                img_a_uri=img_a_uri,
+                img_b_uri=img_b_uri,
+                img_overlay_uri=img_overlay_uri,
+                center_lat=center_lat,
+                center_lon=center_lon,
+                date_a=date_a,
+                date_b=date_b,
+                stats=stats,
+            )
+
+            # Write to file
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(html_content)
+
+            logger.info(f"Interactive HTML saved: {output_path}")
+
+        except Exception as e:
+            logger.error(f"Interactive HTML generation failed: {e}")
+            raise VisualizationError(f"Interactive HTML generation failed: {e}")
+
+    def _get_html_template(self) -> str:
+        """Get HTML template for interactive viewer.
+
+        Returns:
+            HTML template string
+        """
+        return r"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>SatChange Analysis Results</title>
+    <!-- Leaflet 1.9.4 CSS (inlined for offline use) -->
+    <style>
+/* required styles */
+
+
+
+.leaflet-pane,
+
+.leaflet-tile,
+
+.leaflet-marker-icon,
+
+.leaflet-marker-shadow,
+
+.leaflet-tile-container,
+
+.leaflet-pane > svg,
+
+.leaflet-pane > canvas,
+
+.leaflet-zoom-box,
+
+.leaflet-image-layer,
+
+.leaflet-layer {
+
+	position: absolute;
+
+	left: 0;
+
+	top: 0;
+
+	}
+
