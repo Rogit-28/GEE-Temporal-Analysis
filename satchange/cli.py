@@ -819,3 +819,201 @@ def export(
             click.echo(f"[ERROR] Result directory not found: {result}", err=True)
             sys.exit(1)
 
+        click.echo("Starting visualization generation...")
+        click.echo(f"  Result directory: {result}")
+        click.echo(f"  Output format: {format}")
+        click.echo(f"  Emboss intensity: {emboss_intensity}")
+
+        # Initialize visualization manager
+        visualization_manager = VisualizationManager(emboss_intensity=emboss_intensity)
+
+        # Try to find files with new naming convention first, fall back to legacy names
+        import glob as glob_module
+        import numpy as np
+        import json
+
+        # Look for metadata file to get output prefix
+        metadata_files = glob_module.glob(os.path.join(result, "*_metadata.json"))
+        legacy_metadata = os.path.join(result, "metadata.json")
+
+        output_prefix = None
+        metadata_path = None
+
+        if metadata_files:
+            # Use new naming convention
+            metadata_path = metadata_files[0]
+            # Extract prefix from filename (e.g., "loc_2020-01-01_2020-12-31_metadata.json" -> "loc_2020-01-01_2020-12-31")
+            basename = os.path.basename(metadata_path)
+            output_prefix = basename.replace("_metadata.json", "")
+        elif os.path.exists(legacy_metadata):
+            # Fall back to legacy naming
+            metadata_path = legacy_metadata
+            output_prefix = None
+        else:
+            click.echo("[ERROR] No metadata file found in result directory", err=True)
+            sys.exit(1)
+
+        # Define file paths based on naming convention
+        if output_prefix:
+            classification_path = os.path.join(
+                result, f"{output_prefix}_classification.npy"
+            )
+            bands_a_path = os.path.join(result, f"{output_prefix}_bands_a.npy")
+            bands_b_path = os.path.join(result, f"{output_prefix}_bands_b.npy")
+            stats_path = os.path.join(result, f"{output_prefix}_change_stats.json")
+        else:
+            classification_path = os.path.join(result, "classification.npy")
+            bands_a_path = os.path.join(result, "bands_a.npy")
+            bands_b_path = os.path.join(result, "bands_b.npy")
+            stats_path = os.path.join(result, "change_stats.json")
+
+        # Check required files exist
+        required_files = [
+            classification_path,
+            bands_a_path,
+            bands_b_path,
+            stats_path,
+            metadata_path,
+        ]
+        missing_files = [f for f in required_files if not os.path.exists(f)]
+
+        if missing_files:
+            click.echo(
+                f"[ERROR] Missing required files: {', '.join(missing_files)}", err=True
+            )
+            click.echo("Make sure you have run 'satchange analyze' first", err=True)
+            sys.exit(1)
+
+        # Load analysis results
+        click.echo("Loading analysis results...")
+
+        classification = np.load(classification_path, allow_pickle=True)
+        bands_a = np.load(bands_a_path, allow_pickle=True).item()
+        bands_b = np.load(bands_b_path, allow_pickle=True).item()
+
+        with open(stats_path, "r") as f:
+            stats = json.load(f)
+
+        with open(metadata_path, "r") as f:
+            metadata = json.load(f)
+
+        # Extract center coordinates from metadata
+        center_lat = metadata.get("center_lat", 0.0)
+        center_lon = metadata.get("center_lon", 0.0)
+
+        # Determine output prefix for visualization files
+        # Priority: --name option > metadata output_prefix > generate from coordinates
+        if name:
+            # User provided a name, generate new prefix
+            date_a = metadata.get("date_a", {}).get("date", "").split("T")[0]
+            date_b = metadata.get("date_b", {}).get("date", "").split("T")[0]
+            final_output_prefix = generate_output_prefix(
+                name, center_lat, center_lon, date_a, date_b
+            )
+        elif output_prefix:
+            # Use existing prefix from files
+            final_output_prefix = output_prefix
+        else:
+            # Generate prefix from metadata (legacy files)
+            date_a = metadata.get("date_a", {}).get("date", "").split("T")[0]
+            date_b = metadata.get("date_b", {}).get("date", "").split("T")[0]
+            final_output_prefix = generate_output_prefix(
+                None, center_lat, center_lon, date_a, date_b
+            )
+
+        click.echo(f"  Output prefix: {final_output_prefix}")
+
+        # Generate visualizations
+        click.echo("Generating visualizations...")
+
+        formats_to_generate = (
+            [format] if format != "all" else ["static", "interactive", "geotiff"]
+        )
+        output_files = visualization_manager.generate_all_outputs(
+            bands_a,
+            bands_b,
+            classification,
+            stats,
+            metadata,
+            center_lat,
+            center_lon,
+            result,
+            formats_to_generate,
+            output_prefix=final_output_prefix,
+        )
+
+        click.echo("[OK] Visualization generation completed!")
+        click.echo("Generated files:")
+        for format_type, file_path in output_files.items():
+            click.echo(f"  {format_type}: {file_path}")
+
+    except Exception as e:
+        click.echo(f"[ERROR] Export failed: {e}", err=True)
+        sys.exit(1)
+
+
+@main.group()
+def cache() -> None:
+    """Manage local tile storage."""
+    pass
+
+
+@cache.command()
+@click.pass_context
+def status(ctx: click.Context) -> None:
+    """Show cache statistics."""
+    try:
+        cache_manager = CacheManager(ctx.obj["config"])
+        stats = cache_manager.get_cache_stats()
+
+        click.echo("Cache Statistics:")
+        click.echo(f"  Total items: {stats.get('total_items', 0)}")
+        click.echo(f"  Size: {stats.get('size_formatted', '0 B')}")
+        click.echo(f"  Usage: {stats.get('usage_percent', 0):.1f}%")
+        click.echo(f"  Hit rate: {stats.get('hit_rate', 0):.1f}%")
+        click.echo(f"  Hits: {stats.get('hits', 0)}")
+        click.echo(f"  Misses: {stats.get('misses', 0)}")
+        click.echo(f"  Evictions: {stats.get('evictions', 0)}")
+
+        cache_manager.close()
+
+    except Exception as e:
+        click.echo(f"[ERROR] Failed to get cache status: {e}", err=True)
+
+
+@cache.command()
+@click.pass_context
+def clear(ctx: click.Context) -> None:
+    """Clear all cached tiles."""
+    try:
+        cache_manager = CacheManager(ctx.obj["config"])
+
+        if click.confirm("Are you sure you want to clear all cached tiles?"):
+            if cache_manager.clear_cache():
+                click.echo("[OK] Cache cleared successfully")
+            else:
+                click.echo("[ERROR] Failed to clear cache", err=True)
+
+        cache_manager.close()
+
+    except Exception as e:
+        click.echo(f"[ERROR] Failed to clear cache: {e}", err=True)
+
+
+@cache.command()
+@click.pass_context
+def cleanup(ctx: click.Context) -> None:
+    """Remove expired cache entries (older than 30 days)."""
+    try:
+        cache_manager = CacheManager(ctx.obj["config"])
+        if cache_manager.cleanup_cache():
+            click.echo("[OK] Cache cleanup completed")
+        else:
+            click.echo("[ERROR] Cache cleanup failed", err=True)
+        cache_manager.close()
+    except Exception as e:
+        click.echo(f"[ERROR] Cache cleanup failed: {e}", err=True)
+
+
+if __name__ == "__main__":
+    main()
