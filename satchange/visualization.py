@@ -129,3 +129,185 @@ class StaticVisualizer:
         """
         self.emboss_renderer = EmbossRenderer(emboss_intensity)
 
+    def create_rgb_composite(self, bands: Dict[str, np.ndarray]) -> np.ndarray:
+        """Create RGB composite from satellite bands.
+
+        Args:
+            bands: Dictionary with band arrays
+
+        Returns:
+            RGB composite array (H, W, 3)
+        """
+        try:
+            # Create RGB composite (B4=Red, B3=Green, B2=Blue)
+            # Note: B2 (Blue) might not be available in all cases
+            if "B2" in bands:
+                rgb = np.dstack(
+                    [
+                        bands["B4"],  # Red
+                        bands["B3"],  # Green
+                        bands["B2"],  # Blue
+                    ]
+                )
+            else:
+                # If B2 not available, create grayscale from RGB bands
+                rgb = np.dstack(
+                    [
+                        bands["B4"],  # Red
+                        bands["B3"],  # Green
+                        bands["B4"],  # Use Red as Blue substitute
+                    ]
+                )
+
+            # Normalize to 0-255 for display
+            rgb_norm = self._normalize_image(rgb)
+
+            return rgb_norm
+
+        except Exception as e:
+            logger.error(f"RGB composite creation failed: {e}")
+            raise VisualizationError(f"RGB composite creation failed: {e}")
+
+    def _normalize_image(self, image: np.ndarray) -> np.ndarray:
+        """Normalize image to 0-255 range.
+
+        Args:
+            image: Input image array
+
+        Returns:
+            Normalized image array
+        """
+        try:
+            img_min = image.min()
+            img_max = image.max()
+
+            if img_max == img_min:
+                # Constant image — return uniform array
+                return np.zeros_like(image, dtype=np.uint8)
+            elif img_max <= 1.0 and img_min >= 0.0:
+                # Already normalized to [0, 1]
+                return (image * 255).astype(np.uint8)
+            else:
+                # Normalize based on min/max
+                image_norm = image.astype(float)
+                image_norm = (image_norm - img_min) / (img_max - img_min)
+                return (image_norm * 255).astype(np.uint8)
+
+        except Exception as e:
+            logger.error(f"Image normalization failed: {e}")
+            raise VisualizationError(f"Image normalization failed: {e}")
+
+    def generate_comparison_plot(
+        self,
+        bands_a: Dict[str, np.ndarray],
+        bands_b: Dict[str, np.ndarray],
+        classification: np.ndarray,
+        embossed: np.ndarray,
+        output_path: str,
+    ) -> None:
+        """Generate static comparison plot with before/after/changes.
+
+        Args:
+            bands_a: Band arrays for Date A
+            bands_b: Band arrays for Date B
+            classification: Change classification map
+            embossed: Embossed change mask
+            output_path: Path to save the plot
+        """
+        try:
+            logger.info(f"Generating static comparison plot: {output_path}")
+
+            # Create RGB composites
+            rgb_a = self.create_rgb_composite(bands_a)
+            rgb_b = self.create_rgb_composite(bands_b)
+
+            # Create overlay
+            overlay = self.emboss_renderer.create_color_coded_overlay(
+                classification, embossed
+            )
+
+            # Composite: blend overlay with base image
+            composite = rgb_b.copy()
+            # Alpha blend
+            alpha = overlay[:, :, 3:4] / 255.0
+            composite = (composite * (1 - alpha) + overlay[:, :, :3] * alpha).astype(
+                np.uint8
+            )
+
+            # Create figure with subplots
+            fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+            # Panel 1: Date A (Before)
+            axes[0].imshow(rgb_a)
+            axes[0].set_title("Date A - Before", fontsize=14, fontweight="bold")
+            axes[0].axis("off")
+
+            # Panel 2: Date B (After)
+            axes[1].imshow(rgb_b)
+            axes[1].set_title("Date B - After", fontsize=14, fontweight="bold")
+            axes[1].axis("off")
+
+            # Panel 3: Changes overlay
+            axes[2].imshow(rgb_b)
+            axes[2].imshow(overlay, interpolation="bilinear")
+            axes[2].set_title("Detected Changes", fontsize=14, fontweight="bold")
+            axes[2].axis("off")
+
+            # Add legend
+            self._add_change_legend(axes[2])
+
+            plt.tight_layout()
+            try:
+                plt.savefig(
+                    output_path, dpi=300, bbox_inches="tight", facecolor="white"
+                )
+                logger.info(f"Static plot saved: {output_path}")
+            finally:
+                plt.close(fig)
+
+        except Exception as e:
+            logger.error(f"Static plot generation failed: {e}")
+            raise VisualizationError(f"Static plot generation failed: {e}")
+
+    def _add_change_legend(self, ax) -> None:
+        """Add legend to change detection plot.
+
+        Args:
+            ax: Matplotlib axis object
+        """
+        try:
+            from matplotlib.patches import Patch
+
+            legend_elements = [
+                Patch(facecolor=(0, 1, 0, 0.7), label="Vegetation Growth"),
+                Patch(facecolor=(1, 0, 0, 0.7), label="Vegetation Loss"),
+                Patch(facecolor=(0, 0.4, 1, 0.7), label="Water Expansion"),
+                Patch(facecolor=(1, 0.65, 0, 0.7), label="Water Reduction"),
+                Patch(facecolor=(0.5, 0.5, 0.5, 0.7), label="Urban Development"),
+                Patch(facecolor=(0.25, 0.25, 0.25, 0.7), label="Urban Decline"),
+                Patch(facecolor=(1, 1, 0, 0.7), label="Ambiguous"),
+            ]
+
+            ax.legend(
+                handles=legend_elements,
+                loc="upper left",
+                bbox_to_anchor=(1, 1),
+                fontsize=10,
+                framealpha=0.9,
+            )
+
+        except Exception as e:
+            logger.warning(f"Failed to add legend: {e}")
+
+
+class InteractiveVisualizer:
+    """Generate interactive HTML viewers for change detection results."""
+
+    def __init__(self, emboss_intensity: float = 1.0):
+        """Initialize interactive visualizer.
+
+        Args:
+            emboss_intensity: Emboss effect strength
+        """
+        self.emboss_renderer = EmbossRenderer(emboss_intensity)
+
