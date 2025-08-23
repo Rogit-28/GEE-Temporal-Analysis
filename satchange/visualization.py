@@ -541,3 +541,361 @@ class InteractiveVisualizer:
 
 	}
 
+.leaflet-container {
+
+	overflow: hidden;
+
+	}
+
+.leaflet-tile,
+
+.leaflet-marker-icon,
+
+.leaflet-marker-shadow {
+
+	-webkit-user-select: none;
+
+	   -moz-user-select: none;
+
+	        user-select: none;
+
+	  -webkit-user-drag: none;
+
+	}
+
+/* Prevents IE11 from highlighting tiles in blue */
+
+.leaflet-tile::selection {
+
+	background: transparent;
+
+}
+
+/* Safari renders non-retina tile on retina better with this, but Chrome is worse */
+
+.leaflet-safari .leaflet-tile {
+
+	image-rendering: -webkit-optimize-contrast;
+
+	}
+
+/* hack that prevents hw layers "stretching" when loading new tiles */
+
+.leaflet-safari .leaflet-tile-container {
+
+	width: 1600px;
+
+	height: 1600px;
+
+	-webkit-transform-origin: 0 0;
+
+	}
+
+.leaflet-marker-icon,
+
+.leaflet-marker-shadow {
+
+	display: block;
+
+	}
+
+/* .leaflet-container svg: reset svg max-width decleration shipped in Joomla! (joomla.org) 3.x */
+
+/* .leaflet-container img: map is broken in FF if you have max-width: 100% on tiles */
+
+.leaflet-container .leaflet-overlay-pane svg {
+
+	max-width: none !important;
+
+	max-height: none !important;
+
+	}
+
+.leaflet-container .leaflet-marker-pane img,
+
+.leaflet-container .leaflet-shadow-pane img,
+
+.leaflet-container .leaflet-tile-pane img,
+
+.leaflet-container img.leaflet-image-layer,
+
+.leaflet-container .leaflet-tile {
+
+	max-width: none !important;
+
+	max-height: none !important;
+
+	width: auto;
+
+	padding: 0;
+
+	}
+
+
+
+.leaflet-container img.leaflet-tile {
+
+	/* See: https://bugs.chromium.org/p/chromium/issues/detail?id=600120 */
+
+	mix-blend-mode: plus-lighter;
+
+}
+
+
+
+.leaflet-container.leaflet-touch-zoom {
+
+	-ms-touch-action: pan-x pan-y;
+
+	touch-action: pan-x pan-y;
+
+	}
+
+.leaflet-container.leaflet-touch-drag {
+
+	-ms-touch-action: pinch-zoom;
+
+	/* Fallback for FF which doesn't support pinch-zoom */
+
+	touch-action: none;
+
+	touch-action: pinch-zoom;
+
+}
+
+.leaflet-container.leaflet-touch-drag.leaflet-touch-zoom {
+
+	-ms-touch-action: none;
+
+	touch-action: none;
+
+}
+
+.leaflet-container {
+
+	-webkit-tap-highlight-color: transparent;
+
+}
+
+.leaflet-container a {
+
+	-webkit-tap-highlight-color: rgba(51, 181, 229, 0.4);
+
+}
+
+.leaflet-tile {
+
+	filter: inherit;
+
+	visibility: hidden;
+
+	}
+
+.leaflet-tile-loaded {
+
+	visibility: inherit;
+
+	}
+
+.leaflet-zoom-box {
+
+	width: 0;
+
+	height: 0;
+
+	-moz-box-sizing: border-box;
+
+	     box-sizing: border-box;
+
+	z-index: 800;
+
+	}
+
+/* workaround for https://bugzilla.mozilla.org/show_bug.cgi?id=888319 */
+
+.leaflet-overlay-pane svg {
+
+	-moz-user-select: none;
+
+	}
+
+
+
+.leaflet-pane         { z-index: 400; }
+
+
+
+.leaflet-tile-pane    { z-index: 200; }
+
+.leaflet-overlay-pane { z-index: 400; }
+
+.leaflet-shadow-pane  { z-index: 500; }
+
+.leaflet-marker-pane  { z-index: 600; }
+
+.leaflet-tooltip-pane   { z-index: 650; }
+
+.leaflet-popup-pane   { z-index: 700; }
+
+
+
+.leaflet-map-pane canvas { z-index: 100; }
+
+.leaflet-map-pane svg    { z-index: 200; }
+
+
+
+.leaflet-vml-shape {
+
+	width: 1px;
+
+	height: 1px;
+
+	}
+
+.lvml {
+
+	behavior: url(#default#VML);
+
+	display: inline-block;
+
+	position: absolute;
+
+	}
+
+
+
+
+
+/* control positioning */
+
+
+
+.leaflet-control {
+
+	position: relative;
+
+	z-index: 800;
+
+	pointer-events: visiblePainted; /* IE 9-10 doesn't have auto */
+
+	pointer-events: auto;
+
+	}
+
+.leaflet-top,
+
+.leaflet-bottom {
+
+	position: absolute;
+
+	z-index: 1000;
+
+	pointer-events: none;
+
+	}
+
+.leaflet-top {
+
+	top: 0;
+
+	}
+
+.leaflet-right {
+
+	right: 0;
+
+	}
+
+.leaflet-bottom {
+
+	bottom: 0;
+
+	}
+
+.leaflet-left {
+
+	left: 0;
+
+	}
+
+.leaflet-control {
+
+	float: left;
+
+	clear: both;
+
+	}
+
+.leaflet-right .leaflet-control {
+
+	float: right;
+
+	}
+
+.leaflet-top .leaflet-control {
+
+	margin-top: 10px;
+
+	}
+
+.leaflet-bottom .leaflet-control {
+
+	margin-bottom: 10px;
+
+	}
+
+.leaflet-left .leaflet-control {
+
+	margin-left: 10px;
+
+	}
+
+.leaflet-right .leaflet-control {
+
+	margin-right: 10px;
+
+	}
+
+
+
+
+
+/* zoom and fade animations */
+
+
+
+.leaflet-fade-anim .leaflet-popup {
+
+	opacity: 0;
+
+	-webkit-transition: opacity 0.2s linear;
+
+	   -moz-transition: opacity 0.2s linear;
+
+	        transition: opacity 0.2s linear;
+
+	}
+
+.leaflet-fade-anim .leaflet-map-pane .leaflet-popup {
+
+	opacity: 1;
+
+	}
+
+.leaflet-zoom-animated {
+
+	-webkit-transform-origin: 0 0;
+
+	    -ms-transform-origin: 0 0;
+
+	        transform-origin: 0 0;
+
+	}
+
+svg.leaflet-zoom-animated {
+
+	will-change: transform;
+
+}
+
