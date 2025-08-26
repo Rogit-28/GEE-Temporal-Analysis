@@ -14,6 +14,7 @@ setup(
     description="A CLI tool for detecting temporal changes in satellite imagery",
     long_description=long_description,
     long_description_content_type="text/markdown",
+    # Updated package metadata and dependencies
     url="https://github.com/satchange/satchange",
     packages=find_packages(),
     classifiers=[
