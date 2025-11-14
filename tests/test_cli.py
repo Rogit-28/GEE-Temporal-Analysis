@@ -568,3 +568,681 @@ class TestAnalyzeHappyPath:
             }
             result = runner.invoke(main, _ANALYZE_BASE_ARGS + [str(tmp_path)])
 
+        assert result.exit_code == 0, result.output
+        assert "Step 1/4" in result.output
+        assert "Step 3/4" in result.output
+        assert "Step 4/4" in result.output
+        assert "Change detection completed successfully" in result.output
+
+    def test_both_dates_good_no_alternatives(self, runner, tmp_path):
+        """When both dates are cloud-free the 'no alternatives needed' message appears."""
+        from contextlib import ExitStack
+
+        with ExitStack() as stack:
+            for v in _patch_analyze_deps().values():
+                stack.enter_context(v)
+            result = runner.invoke(main, _ANALYZE_BASE_ARGS + [str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "no alternatives needed" in result.output
+
+
+class TestAnalyzeCloudAlternatives:
+    """Tests for cloud-coverage alternative-date logic."""
+
+    def test_date_a_bad_triggers_alternatives(self, runner, tmp_path):
+        """When Date A has bad cloud coverage, alternatives are searched."""
+        from contextlib import ExitStack
+
+        bad_a = _make_cloud_check("2022-02-04", is_good=False, local_pct=80.0)
+        gee = MagicMock()
+        gee.check_local_cloud.side_effect = lambda date, *a, **kw: (
+            bad_a if date == "2022-02-04" else _make_cloud_check("2024-10-26")
+        )
+        gee.find_alternative_dates.return_value = {
+            "threshold_met": True,
+            "search_window": "±30 days",
+            "alternatives": [
+                {
+                    "date": "2022-02-10",
+                    "local_cloud_pct": 3.0,
+                    "is_recommended": True,
+                    "image_id": "COPERNICUS/S2_SR_HARMONIZED/20220210T000000",
+                },
+            ],
+        }
+        gee.create_bbox.return_value = MagicMock()
+        gee.get_image_info.return_value = {"date": "2022-02-10", "cloud_coverage": 3.0}
+        gee.download_image.return_value = (
+            _make_band_arrays(),
+            {"crs": "EPSG:4326", "date": "2022-02-10"},
+        )
+
+        patches = _patch_analyze_deps(gee_client=gee)
+
+        with ExitStack() as stack:
+            for v in patches.values():
+                stack.enter_context(v)
+            result = runner.invoke(
+                main,
+                _ANALYZE_BASE_ARGS + [str(tmp_path), "--non-interactive"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Finding alternatives" in result.output
+        gee.find_alternative_dates.assert_called_once()
+
+    def test_non_interactive_auto_selects_recommended(self, runner, tmp_path):
+        """--non-interactive auto-selects the recommended date."""
+        from contextlib import ExitStack
+
+        bad_a = _make_cloud_check("2022-02-04", is_good=False, local_pct=80.0)
+        gee = MagicMock()
+        gee.check_local_cloud.side_effect = lambda date, *a, **kw: (
+            bad_a if date == "2022-02-04" else _make_cloud_check("2024-10-26")
+        )
+        gee.find_alternative_dates.return_value = {
+            "threshold_met": True,
+            "search_window": "±30 days",
+            "alternatives": [
+                {
+                    "date": "2022-02-12",
+                    "local_cloud_pct": 2.0,
+                    "is_recommended": True,
+                    "image_id": "COPERNICUS/S2_SR_HARMONIZED/20220212T000000",
+                },
+            ],
+        }
+        gee.create_bbox.return_value = MagicMock()
+        gee.get_image_info.return_value = {"date": "2022-02-12", "cloud_coverage": 2.0}
+        gee.download_image.return_value = (
+            _make_band_arrays(),
+            {"crs": "EPSG:4326", "date": "2022-02-12"},
+        )
+
+        patches = _patch_analyze_deps(gee_client=gee)
+
+        with ExitStack() as stack:
+            for v in patches.values():
+                stack.enter_context(v)
+            result = runner.invoke(
+                main,
+                _ANALYZE_BASE_ARGS + [str(tmp_path), "--non-interactive"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Auto-selected" in result.output
+
+
+class TestAnalyzeDryRun:
+    """Tests for --dry-run flag."""
+
+    def test_dry_run_exits_after_cloud_check(self, runner, tmp_path):
+        from contextlib import ExitStack
+
+        with ExitStack() as stack:
+            mocks = {
+                k: stack.enter_context(v) for k, v in _patch_analyze_deps().items()
+            }
+            result = runner.invoke(
+                main, _ANALYZE_BASE_ARGS + [str(tmp_path), "--dry-run"]
+            )
+
+        assert result.exit_code == 0
+        assert "DRY RUN" in result.output
+
+    def test_dry_run_shows_what_would_be_done(self, runner, tmp_path):
+        from contextlib import ExitStack
+
+        with ExitStack() as stack:
+            mocks = {
+                k: stack.enter_context(v) for k, v in _patch_analyze_deps().items()
+            }
+            result = runner.invoke(
+                main, _ANALYZE_BASE_ARGS + [str(tmp_path), "--dry-run"]
+            )
+
+        assert "No images downloaded" in result.output
+
+    def test_dry_run_does_not_call_download(self, runner, tmp_path):
+        from contextlib import ExitStack
+
+        with ExitStack() as stack:
+            mocks = {
+                k: stack.enter_context(v) for k, v in _patch_analyze_deps().items()
+            }
+            result = runner.invoke(
+                main, _ANALYZE_BASE_ARGS + [str(tmp_path), "--dry-run"]
+            )
+
+        assert result.exit_code == 0
+        # If download were called we'd see "Step 3/4" — it shouldn't appear
+        assert "Step 3/4" not in result.output
+
+
+class TestAnalyzeChangeTypes:
+    """Tests for --change-type options."""
+
+    def test_vegetation(self, runner, tmp_path):
+        from contextlib import ExitStack
+
+        patches = _patch_analyze_deps(change_type="vegetation")
+        with ExitStack() as stack:
+            for v in patches.values():
+                stack.enter_context(v)
+            result = runner.invoke(
+                main,
+                _ANALYZE_BASE_ARGS + [str(tmp_path), "--change-type", "vegetation"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Vegetation" in result.output
+
+    def test_water(self, runner, tmp_path):
+        from contextlib import ExitStack
+
+        patches = _patch_analyze_deps(change_type="water")
+        with ExitStack() as stack:
+            for v in patches.values():
+                stack.enter_context(v)
+            result = runner.invoke(
+                main,
+                _ANALYZE_BASE_ARGS + [str(tmp_path), "--change-type", "water"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Water" in result.output
+
+    def test_urban(self, runner, tmp_path):
+        from contextlib import ExitStack
+
+        patches = _patch_analyze_deps(change_type="urban")
+        with ExitStack() as stack:
+            for v in patches.values():
+                stack.enter_context(v)
+            result = runner.invoke(
+                main,
+                _ANALYZE_BASE_ARGS + [str(tmp_path), "--change-type", "urban"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Urban" in result.output
+
+    def test_all(self, runner, tmp_path):
+        from contextlib import ExitStack
+
+        patches = _patch_analyze_deps(change_type="all")
+        with ExitStack() as stack:
+            for v in patches.values():
+                stack.enter_context(v)
+            result = runner.invoke(
+                main,
+                _ANALYZE_BASE_ARGS + [str(tmp_path), "--change-type", "all"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Change Detection Results" in result.output
+
+
+class TestAnalyzeErrors:
+    """Tests for analyze error handling."""
+
+    def test_not_authenticated_exits_1(self, runner, tmp_path):
+        from contextlib import ExitStack
+
+        patches = _patch_analyze_deps(config_authenticated=False)
+        with ExitStack() as stack:
+            for v in patches.values():
+                stack.enter_context(v)
+            result = runner.invoke(main, _ANALYZE_BASE_ARGS + [str(tmp_path)])
+
+        assert result.exit_code == 1
+        assert "Not authenticated" in result.output
+
+    @patch("satchange.cli.spinner", side_effect=_noop_spinner)
+    @patch("satchange.cli.progress_bar", side_effect=_noop_progress_bar)
+    @patch("satchange.cli.VisualizationManager")
+    @patch("satchange.cli.ChangeDetector")
+    @patch("satchange.cli.ImageProcessor")
+    @patch("satchange.cli.CacheManager")
+    @patch("satchange.cli.GEEClient")
+    @patch("satchange.cli.Config")
+    def test_quota_exceeded_error(
+        self,
+        MockConfig,
+        MockGEE,
+        MockCache,
+        MockIP,
+        MockCD,
+        MockViz,
+        _pb,
+        _sp,
+        runner,
+        tmp_path,
+    ):
+        from satchange.gee_client import QuotaExceededError
+
+        cfg = MagicMock(is_authenticated=MagicMock(return_value=True))
+        MockConfig.return_value = cfg
+        gee = MagicMock()
+        gee.check_local_cloud.side_effect = QuotaExceededError("quota exceeded")
+        MockGEE.return_value = gee
+
+        result = runner.invoke(main, _ANALYZE_BASE_ARGS + [str(tmp_path)])
+        assert result.exit_code == 1
+        assert "GEE limit reached" in result.output
+
+    @patch("satchange.cli.spinner", side_effect=_noop_spinner)
+    @patch("satchange.cli.progress_bar", side_effect=_noop_progress_bar)
+    @patch("satchange.cli.VisualizationManager")
+    @patch("satchange.cli.ChangeDetector")
+    @patch("satchange.cli.ImageProcessor")
+    @patch("satchange.cli.CacheManager")
+    @patch("satchange.cli.GEEClient")
+    @patch("satchange.cli.Config")
+    def test_rate_limit_error(
+        self,
+        MockConfig,
+        MockGEE,
+        MockCache,
+        MockIP,
+        MockCD,
+        MockViz,
+        _pb,
+        _sp,
+        runner,
+        tmp_path,
+    ):
+        from satchange.gee_client import RateLimitError
+
+        cfg = MagicMock(is_authenticated=MagicMock(return_value=True))
+        MockConfig.return_value = cfg
+        gee = MagicMock()
+        gee.check_local_cloud.side_effect = RateLimitError("rate limit")
+        MockGEE.return_value = gee
+
+        result = runner.invoke(main, _ANALYZE_BASE_ARGS + [str(tmp_path)])
+        assert result.exit_code == 1
+        assert "GEE limit reached" in result.output
+
+    @patch("satchange.cli.spinner", side_effect=_noop_spinner)
+    @patch("satchange.cli.progress_bar", side_effect=_noop_progress_bar)
+    @patch("satchange.cli.VisualizationManager")
+    @patch("satchange.cli.ChangeDetector")
+    @patch("satchange.cli.ImageProcessor")
+    @patch("satchange.cli.CacheManager")
+    @patch("satchange.cli.GEEClient")
+    @patch("satchange.cli.Config")
+    def test_no_imagery_error(
+        self,
+        MockConfig,
+        MockGEE,
+        MockCache,
+        MockIP,
+        MockCD,
+        MockViz,
+        _pb,
+        _sp,
+        runner,
+        tmp_path,
+    ):
+        from satchange.gee_client import NoImageryError
+
+        cfg = MagicMock(is_authenticated=MagicMock(return_value=True))
+        MockConfig.return_value = cfg
+        gee = MagicMock()
+        gee.check_local_cloud.side_effect = NoImageryError("no imagery")
+        MockGEE.return_value = gee
+
+        result = runner.invoke(main, _ANALYZE_BASE_ARGS + [str(tmp_path)])
+        assert result.exit_code == 1
+        assert "No suitable imagery" in result.output
+
+    @patch("satchange.cli.spinner", side_effect=_noop_spinner)
+    @patch("satchange.cli.progress_bar", side_effect=_noop_progress_bar)
+    @patch("satchange.cli.VisualizationManager")
+    @patch("satchange.cli.ChangeDetector")
+    @patch("satchange.cli.ImageProcessor")
+    @patch("satchange.cli.CacheManager")
+    @patch("satchange.cli.GEEClient")
+    @patch("satchange.cli.Config")
+    def test_download_error(
+        self,
+        MockConfig,
+        MockGEE,
+        MockCache,
+        MockIP,
+        MockCD,
+        MockViz,
+        _pb,
+        _sp,
+        runner,
+        tmp_path,
+    ):
+        from satchange.gee_client import DownloadError
+
+        cfg = MagicMock(is_authenticated=MagicMock(return_value=True))
+        MockConfig.return_value = cfg
+        gee = MagicMock()
+        gee.check_local_cloud.side_effect = DownloadError("download failed")
+        MockGEE.return_value = gee
+
+        result = runner.invoke(main, _ANALYZE_BASE_ARGS + [str(tmp_path)])
+        assert result.exit_code == 1
+        assert "Download failed" in result.output
+
+    @patch("satchange.cli.spinner", side_effect=_noop_spinner)
+    @patch("satchange.cli.progress_bar", side_effect=_noop_progress_bar)
+    @patch("satchange.cli.VisualizationManager")
+    @patch("satchange.cli.ChangeDetector")
+    @patch("satchange.cli.ImageProcessor")
+    @patch("satchange.cli.CacheManager")
+    @patch("satchange.cli.GEEClient")
+    @patch("satchange.cli.Config")
+    def test_keyboard_interrupt_exits_130(
+        self,
+        MockConfig,
+        MockGEE,
+        MockCache,
+        MockIP,
+        MockCD,
+        MockViz,
+        _pb,
+        _sp,
+        runner,
+        tmp_path,
+    ):
+        cfg = MagicMock(is_authenticated=MagicMock(return_value=True))
+        MockConfig.return_value = cfg
+        gee = MagicMock()
+        gee.check_local_cloud.side_effect = KeyboardInterrupt()
+        MockGEE.return_value = gee
+
+        result = runner.invoke(main, _ANALYZE_BASE_ARGS + [str(tmp_path)])
+        assert result.exit_code == 130
+
+    @patch("satchange.cli.spinner", side_effect=_noop_spinner)
+    @patch("satchange.cli.progress_bar", side_effect=_noop_progress_bar)
+    @patch("satchange.cli.VisualizationManager")
+    @patch("satchange.cli.ChangeDetector")
+    @patch("satchange.cli.ImageProcessor")
+    @patch("satchange.cli.CacheManager")
+    @patch("satchange.cli.GEEClient")
+    @patch("satchange.cli.Config")
+    def test_generic_exception_exits_1(
+        self,
+        MockConfig,
+        MockGEE,
+        MockCache,
+        MockIP,
+        MockCD,
+        MockViz,
+        _pb,
+        _sp,
+        runner,
+        tmp_path,
+    ):
+        cfg = MagicMock(is_authenticated=MagicMock(return_value=True))
+        MockConfig.return_value = cfg
+        gee = MagicMock()
+        gee.check_local_cloud.side_effect = RuntimeError("unexpected")
+        MockGEE.return_value = gee
+
+        result = runner.invoke(main, _ANALYZE_BASE_ARGS + [str(tmp_path)])
+        assert result.exit_code == 1
+        assert "Analysis failed" in result.output
+
+
+class TestAnalyzeDiskSpace:
+    """Tests for disk-space pre-check in analyze."""
+
+    def test_insufficient_disk_space_exits_1(self, runner, tmp_path):
+        from contextlib import ExitStack
+
+        patches = _patch_analyze_deps(disk_space_ok=False)
+        with ExitStack() as stack:
+            for v in patches.values():
+                stack.enter_context(v)
+            result = runner.invoke(main, _ANALYZE_BASE_ARGS + [str(tmp_path)])
+
+        assert result.exit_code == 1
+        assert "Insufficient disk space" in result.output
+
+
+# ======================================================================
+# export command tests
+# ======================================================================
+
+
+def _setup_export_dir(tmp_path, prefix="loc_2022-01-01_2022-06-01"):
+    """Create fake analysis artefacts so export can find them."""
+    bands = _make_band_arrays()
+    classification = np.zeros((100, 100), dtype=np.uint8)
+    stats = {"total_change": {"pixels": 100, "percent": 1.0, "area_km2": 0.01}}
+    metadata = {
+        "date_a": {"date": "2022-01-01", "cloud_coverage": 5.0},
+        "date_b": {"date": "2022-06-01", "cloud_coverage": 8.0},
+        "center_lat": 13.0827,
+        "center_lon": 80.2707,
+        "output_prefix": prefix,
+    }
+
+    np.save(os.path.join(tmp_path, f"{prefix}_bands_a.npy"), bands)
+    np.save(os.path.join(tmp_path, f"{prefix}_bands_b.npy"), bands)
+    np.save(os.path.join(tmp_path, f"{prefix}_classification.npy"), classification)
+
+    with open(os.path.join(tmp_path, f"{prefix}_change_stats.json"), "w") as f:
+        json.dump(stats, f)
+    with open(os.path.join(tmp_path, f"{prefix}_metadata.json"), "w") as f:
+        json.dump(metadata, f)
+
+
+class TestExport:
+    """Tests for the 'export' command."""
+
+    @patch("satchange.cli.VisualizationManager")
+    @patch("satchange.cli.GEEClient")
+    @patch("satchange.cli.Config")
+    def test_success(self, MockConfig, MockGEE, MockViz, runner, tmp_path):
+        cfg = MagicMock(is_authenticated=MagicMock(return_value=False))
+        MockConfig.return_value = cfg
+
+        _setup_export_dir(tmp_path)
+        viz_inst = MagicMock()
+        viz_inst.generate_all_outputs.return_value = {
+            "static": str(tmp_path / "out.png"),
+        }
+        MockViz.return_value = viz_inst
+
+        result = runner.invoke(main, ["export", "--result", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "Visualization generation completed" in result.output
+
+    @patch("satchange.cli.GEEClient")
+    @patch("satchange.cli.Config")
+    def test_result_dir_not_found(self, MockConfig, MockGEE, runner, tmp_path):
+        cfg = MagicMock(is_authenticated=MagicMock(return_value=False))
+        MockConfig.return_value = cfg
+
+        result = runner.invoke(
+            main, ["export", "--result", str(tmp_path / "nonexistent")]
+        )
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+
+    @patch("satchange.cli.GEEClient")
+    @patch("satchange.cli.Config")
+    def test_missing_required_files(self, MockConfig, MockGEE, runner, tmp_path):
+        cfg = MagicMock(is_authenticated=MagicMock(return_value=False))
+        MockConfig.return_value = cfg
+
+        # Empty directory — no artefacts at all  → no metadata file
+        result = runner.invoke(main, ["export", "--result", str(tmp_path)])
+        assert result.exit_code == 1
+        # Either "Missing required files" or "No metadata file found"
+        assert "ERROR" in result.output
+
+    @patch("satchange.cli.VisualizationManager")
+    @patch("satchange.cli.GEEClient")
+    @patch("satchange.cli.Config")
+    def test_format_static(self, MockConfig, MockGEE, MockViz, runner, tmp_path):
+        cfg = MagicMock(is_authenticated=MagicMock(return_value=False))
+        MockConfig.return_value = cfg
+
+        _setup_export_dir(tmp_path)
+        viz_inst = MagicMock()
+        viz_inst.generate_all_outputs.return_value = {"static": "out.png"}
+        MockViz.return_value = viz_inst
+
+        result = runner.invoke(
+            main, ["export", "--result", str(tmp_path), "--format", "static"]
+        )
+        assert result.exit_code == 0
+        # Verify only static format was requested
+        call_args = viz_inst.generate_all_outputs.call_args
+        assert call_args[0][8] == ["static"]  # formats_to_generate positional arg #8
+
+    @patch("satchange.cli.VisualizationManager")
+    @patch("satchange.cli.GEEClient")
+    @patch("satchange.cli.Config")
+    def test_name_flag(self, MockConfig, MockGEE, MockViz, runner, tmp_path):
+        cfg = MagicMock(is_authenticated=MagicMock(return_value=False))
+        MockConfig.return_value = cfg
+
+        _setup_export_dir(tmp_path)
+        viz_inst = MagicMock()
+        viz_inst.generate_all_outputs.return_value = {"static": "out.png"}
+        MockViz.return_value = viz_inst
+
+        result = runner.invoke(
+            main,
+            ["export", "--result", str(tmp_path), "--name", "my-place"],
+        )
+        assert result.exit_code == 0
+        call_kwargs = viz_inst.generate_all_outputs.call_args
+        # The output_prefix kwarg should contain the user-provided name
+        assert "my-place" in call_kwargs.kwargs.get(
+            "output_prefix", call_kwargs[1].get("output_prefix", "")
+        )
+
+
+# ======================================================================
+# cache command tests
+# ======================================================================
+
+
+class TestCacheStatus:
+    """Tests for 'cache status' command."""
+
+    @patch("satchange.cli.CacheManager")
+    @patch("satchange.cli.GEEClient")
+    @patch("satchange.cli.Config")
+    def test_shows_statistics(self, MockConfig, MockGEE, MockCache, runner):
+        cfg = MagicMock(is_authenticated=MagicMock(return_value=False))
+        MockConfig.return_value = cfg
+
+        cache_inst = MagicMock()
+        cache_inst.get_cache_stats.return_value = {
+            "total_items": 42,
+            "size_formatted": "256 MB",
+            "usage_percent": 12.5,
+            "hit_rate": 60.0,
+            "hits": 30,
+            "misses": 20,
+            "evictions": 2,
+        }
+        MockCache.return_value = cache_inst
+
+        result = runner.invoke(main, ["cache", "status"])
+        assert result.exit_code == 0
+        assert "42" in result.output
+        assert "256 MB" in result.output
+
+    @patch("satchange.cli.CacheManager")
+    @patch("satchange.cli.GEEClient")
+    @patch("satchange.cli.Config")
+    def test_exception(self, MockConfig, MockGEE, MockCache, runner):
+        cfg = MagicMock(is_authenticated=MagicMock(return_value=False))
+        MockConfig.return_value = cfg
+        MockCache.side_effect = RuntimeError("db locked")
+
+        result = runner.invoke(main, ["cache", "status"])
+        assert "ERROR" in result.output
+
+
+class TestCacheClear:
+    """Tests for 'cache clear' command."""
+
+    @patch("satchange.cli.CacheManager")
+    @patch("satchange.cli.GEEClient")
+    @patch("satchange.cli.Config")
+    def test_confirm_clears(self, MockConfig, MockGEE, MockCache, runner):
+        cfg = MagicMock(is_authenticated=MagicMock(return_value=False))
+        MockConfig.return_value = cfg
+
+        cache_inst = MagicMock()
+        cache_inst.clear_cache.return_value = True
+        MockCache.return_value = cache_inst
+
+        result = runner.invoke(main, ["cache", "clear"], input="y\n")
+        assert result.exit_code == 0
+        assert "cleared" in result.output.lower()
+        cache_inst.clear_cache.assert_called_once()
+
+    @patch("satchange.cli.CacheManager")
+    @patch("satchange.cli.GEEClient")
+    @patch("satchange.cli.Config")
+    def test_clear_failure(self, MockConfig, MockGEE, MockCache, runner):
+        cfg = MagicMock(is_authenticated=MagicMock(return_value=False))
+        MockConfig.return_value = cfg
+
+        cache_inst = MagicMock()
+        cache_inst.clear_cache.return_value = False
+        MockCache.return_value = cache_inst
+
+        result = runner.invoke(main, ["cache", "clear"], input="y\n")
+        assert "ERROR" in result.output or "Failed" in result.output
+
+
+class TestCacheCleanup:
+    """Tests for 'cache cleanup' command."""
+
+    @patch("satchange.cli.CacheManager")
+    @patch("satchange.cli.GEEClient")
+    @patch("satchange.cli.Config")
+    def test_success(self, MockConfig, MockGEE, MockCache, runner):
+        cfg = MagicMock(is_authenticated=MagicMock(return_value=False))
+        MockConfig.return_value = cfg
+
+        cache_inst = MagicMock()
+        cache_inst.cleanup_cache.return_value = True
+        MockCache.return_value = cache_inst
+
+        result = runner.invoke(main, ["cache", "cleanup"])
+        assert result.exit_code == 0
+        assert "cleanup completed" in result.output.lower()
+
+    @patch("satchange.cli.CacheManager")
+    @patch("satchange.cli.GEEClient")
+    @patch("satchange.cli.Config")
+    def test_failure(self, MockConfig, MockGEE, MockCache, runner):
+        cfg = MagicMock(is_authenticated=MagicMock(return_value=False))
+        MockConfig.return_value = cfg
+
+        cache_inst = MagicMock()
+        cache_inst.cleanup_cache.return_value = False
+        MockCache.return_value = cache_inst
+
+        result = runner.invoke(main, ["cache", "cleanup"])
+        assert "ERROR" in result.output or "failed" in result.output.lower()
+
+    @patch("satchange.cli.CacheManager")
+    @patch("satchange.cli.GEEClient")
+    @patch("satchange.cli.Config")
+    def test_cleanup_exception(self, MockConfig, MockGEE, MockCache, runner):
+        cfg = MagicMock(is_authenticated=MagicMock(return_value=False))
+        MockConfig.return_value = cfg
+        MockCache.side_effect = RuntimeError("db error")
+
+        result = runner.invoke(main, ["cache", "cleanup"])
+        assert "ERROR" in result.output or "failed" in result.output.lower()
