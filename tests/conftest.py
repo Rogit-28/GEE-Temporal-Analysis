@@ -1,4 +1,3 @@
-# Test infrastructure: conftest fixtures and shared utilities
 """
 Pytest configuration and fixtures for SatChange tests.
 
