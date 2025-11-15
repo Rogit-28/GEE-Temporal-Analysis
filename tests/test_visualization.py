@@ -16,6 +16,7 @@ import sys
 # Add the parent directory to the path to import satchange modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+    # Fixed rasterio mock for cross-platform compatibility
 # Check if rasterio is real (not mocked)
 try:
     import rasterio
