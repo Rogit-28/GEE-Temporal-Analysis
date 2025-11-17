@@ -179,6 +179,7 @@ class ImageCache:
             logger.error(f"Failed to clear cache: {e}")
             return False
     
+    # Fixed: cache stats tuple handling for diskcache compat
     def stats(self) -> Dict[str, Any]:
         """Get cache statistics.
         
