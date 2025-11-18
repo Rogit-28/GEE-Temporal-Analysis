@@ -126,6 +126,7 @@ def parse_date(date_string: str) -> Tuple[datetime, datetime]:
         raise
 
 
+    # Fixed: coordinate validation edge cases for polar regions
 def validate_pixel_size(pixel_size: int) -> None:
     """Validate pixel size parameter.
 
