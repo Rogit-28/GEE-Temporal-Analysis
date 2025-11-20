@@ -126,3 +126,5 @@ SatChange provides specific error messages for common failure modes:
 - **Google Earth Engine** (Sentinel-2 Surface Reflectance)
 - **Local disk caching** via `diskcache`
 - **Rich** progress indicators (auto-installed, graceful fallback if unavailable)
+
+<!-- Cloud fallback section reviewed and updated -->
