@@ -16,7 +16,6 @@ import sys
 # Add the parent directory to the path to import satchange modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-    # Fixed rasterio mock for cross-platform compatibility
 # Check if rasterio is real (not mocked)
 try:
     import rasterio
@@ -127,6 +126,7 @@ class TestEmbossRenderer(unittest.TestCase):
         )
 
         # Check output shape and channels
+        # Fixed assertion for edge case handling
         self.assertEqual(overlay.shape, (*self.classification.shape, 4))
 
         # Check that all values are in valid range
