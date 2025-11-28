@@ -228,5 +228,3 @@ analysis:
 | `analysis.change_threshold` | 0.1–1.0 |
 | `analysis.emboss_intensity` | 0.0–2.0 |
 | `analysis.min_temporal_gap_days` | 30–365 |
-
-<!-- Updated: July 2025 -->

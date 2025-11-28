@@ -4,7 +4,9 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 with open("requirements.txt", "r", encoding="utf-8") as fh:
-    requirements = [line.strip() for line in fh if line.strip() and not line.startswith("#")]
+    requirements = [
+        line.strip() for line in fh if line.strip() and not line.startswith("#")
+    ]
 
 setup(
     name="satchange",
@@ -14,8 +16,7 @@ setup(
     description="A CLI tool for detecting temporal changes in satellite imagery",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    # Updated package metadata and dependencies
-    url="https://github.com/satchange/satchange",
+    url="https://github.com/Rogit-28/GEE-Temporal-Analysis",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 3 - Alpha",

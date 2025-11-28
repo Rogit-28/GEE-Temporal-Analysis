@@ -222,5 +222,3 @@ def matplotlib_is_mocked():
 def rasterio_is_mocked():
     """Return True if rasterio is mocked."""
     return not _has_rasterio
-
-# All 310 tests verified passing on clean install

@@ -1,4 +1,3 @@
-# Advanced analysis patterns — see advanced_analysis.py for more
 #!/usr/bin/env python3
 """
 Basic usage example for SatChange.

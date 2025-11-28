@@ -126,7 +126,6 @@ class TestEmbossRenderer(unittest.TestCase):
         )
 
         # Check output shape and channels
-        # Fixed assertion for edge case handling
         self.assertEqual(overlay.shape, (*self.classification.shape, 4))
 
         # Check that all values are in valid range

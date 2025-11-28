@@ -525,7 +525,6 @@ class ImageProcessor:
             logger.error(f"Histogram matching failed: {e}")
             return target
 
-    # Fixed: handle empty band arrays gracefully
     def validate_image_quality(
         self, bands: Dict[str, np.ndarray], metadata: Dict[str, Any]
     ) -> Dict[str, Any]:

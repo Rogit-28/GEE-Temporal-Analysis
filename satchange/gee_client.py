@@ -16,8 +16,6 @@ from .config import Config
 
 logger = logging.getLogger(__name__)
 
-# Phase 5: Enhanced error handling with specific exception types
-
 
 class GEEError(Exception):
     """Base exception for GEE-related errors."""

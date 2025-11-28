@@ -1,18 +1,32 @@
 # SatChange
 
-SatChange is a Python CLI for detecting temporal changes in satellite imagery using Google Earth Engine (Sentinel-2). It analyzes two dates, checks local cloud coverage over your AOI, and produces change maps and statistics.
+A Python CLI tool for detecting temporal changes in satellite imagery using Google Earth Engine (Sentinel-2). Analyzes two dates over a geographic area, validates local cloud coverage, and produces change maps with statistics.
 
-## What It Does
+## Features
 
-- Detects **vegetation**, **water**, and **urban** changes using NDVI/NDWI/NDBI
-- Generates static PNGs, offline interactive HTML, and GeoTIFF outputs
-- Caches downloads locally to avoid repeat GEE requests
-- Validates **local** cloud coverage before running analysis
-- Automatic cloud fallback: finds clearer alternatives when your dates are cloudy
-- Rich progress indicators for long-running operations
-- Dry-run mode to preview analysis without downloading
+- **Spectral change detection** using NDVI (vegetation), NDWI (water), and NDBI (urban)
+- **Multiple output formats** — static PNG, interactive HTML with Leaflet, GeoTIFF
+- **Local cloud coverage validation** over your specific AOI (not just scene-level metadata)
+- **Graduated cloud fallback** — threshold relaxation, temporal window expansion, median compositing
+- **Disk-based LRU cache** to avoid redundant GEE downloads
+- **Dry-run mode** to preview analysis without downloading imagery
+- **Rich progress indicators** with graceful fallback
 
-## How To Use
+## Installation
+
+```bash
+git clone https://github.com/Rogit-28/GEE-Temporal-Analysis.git
+cd GEE-Temporal-Analysis
+python -m venv venv
+./venv/Scripts/activate          # Windows
+# source ./venv/bin/activate     # macOS/Linux
+pip install -r requirements.txt
+pip install -e .
+```
+
+**Prerequisites**: Python 3.8+, a GEE service account with Earth Engine API enabled.
+
+## Quick Start
 
 ### 1) Configure GEE Access
 
@@ -38,36 +52,7 @@ satchange analyze \
   --output ./results
 ```
 
-#### Dry Run (preview without downloading)
-
-```bash
-satchange analyze \
-  --center "13.0827,80.2707" \
-  --size 100 \
-  --date-a "2022-02-04" \
-  --date-b "2024-10-26" \
-  --change-type all \
-  --output ./results \
-  --dry-run
-```
-
-The `--dry-run` flag checks cloud coverage and resolves dates, then reports what *would* happen without downloading imagery or running analysis.
-
-#### Urban Change Detection
-
-```bash
-satchange analyze \
-  --center "13.0827,80.2707" \
-  --size 100 \
-  --date-a "2020-01-15" \
-  --date-b "2024-06-20" \
-  --change-type urban \
-  --output ./results
-```
-
-Detects urban development and decline using the Normalized Difference Built-up Index (NDBI) from SWIR (B11) and NIR (B8) bands.
-
-### 4) Generate Visualizations
+### 4) Export Visualizations
 
 ```bash
 satchange export --result ./results --format all
@@ -81,50 +66,96 @@ satchange cache clear           # Delete all cached tiles
 satchange cache cleanup         # Remove entries older than 30 days
 ```
 
-## Installation
+## Usage Examples
+
+### Dry Run (preview without downloading)
 
 ```bash
-git clone https://github.com/satchange/satchange.git
-cd satchange
-python -m venv venv
-./venv/Scripts/activate          # Windows
-# source ./venv/bin/activate     # macOS/Linux
-pip install -r requirements.txt
-pip install -e .
+satchange analyze \
+  --center "13.0827,80.2707" \
+  --size 100 \
+  --date-a "2022-02-04" \
+  --date-b "2024-10-26" \
+  --change-type all \
+  --output ./results \
+  --dry-run
+```
+
+Checks cloud coverage and resolves dates, then reports what *would* happen without downloading imagery.
+
+### Urban Change Detection
+
+```bash
+satchange analyze \
+  --center "13.0827,80.2707" \
+  --size 100 \
+  --date-a "2020-01-15" \
+  --date-b "2024-06-20" \
+  --change-type urban \
+  --output ./results
+```
+
+Detects urban development using NDBI from SWIR (B11) and NIR (B8) bands.
+
+## Project Structure
+
+```
+satchange/
+  __init__.py          # Package metadata (v0.1.0)
+  __main__.py          # python -m satchange entry point
+  cli.py               # Click CLI commands (config, analyze, inspect, export, cache)
+  config.py            # YAML configuration manager
+  gee_client.py        # GEE authentication, image query, download, cloud fallback
+  image_processor.py   # Cloud masking, band resampling, radiometric normalization
+  change_detector.py   # NDVI/NDWI/NDBI calculation, change classification
+  visualization.py     # Emboss, colorize, PNG/HTML/GeoTIFF export
+  cache.py             # Disk-based LRU cache with diskcache
+  utils.py             # Coordinate parsing, logging, JSON encoding
+  progress.py          # Rich progress bars with fallback
+tests/
+  conftest.py          # Shared fixtures and mocks
+  test_*.py            # 310 tests across 8 test modules
+examples/
+  basic_usage.py       # Simple analysis workflow
+  advanced_analysis.py # Multi-region, multi-type analysis
+  integration_example.py # End-to-end pipeline
 ```
 
 ## Cloud Coverage Fallback
 
-When a requested date has high cloud coverage over your AOI, SatChange automatically applies a graduated fallback strategy:
+When a requested date has high cloud coverage over your AOI, SatChange applies a graduated fallback:
 
-1. **Threshold relaxation** — Retries with progressively higher cloud tolerance (20% → 40% → 60%)
-2. **Temporal window expansion** — Searches nearby dates (±30 → ±60 → ±90 days)
-3. **Temporal compositing** — Creates a median composite from the clearest scenes in a ±90-day window
+1. **Threshold relaxation** — retries with progressively higher tolerance (20% -> 40% -> 60%)
+2. **Temporal window expansion** — searches nearby dates (+/-30 -> +/-60 -> +/-90 days)
+3. **Temporal compositing** — creates a median composite from the clearest scenes in a +/-90-day window
 
-If alternatives are found, the CLI presents them for selection (or auto-selects in `--non-interactive` mode).
+In interactive mode the CLI presents alternatives for selection; in `--non-interactive` mode it auto-selects the best option.
 
 ## Error Handling
-
-SatChange provides specific error messages for common failure modes:
 
 | Error | Meaning | Suggestion |
 |-------|---------|------------|
 | `GEE limit reached` | Quota or rate limit exceeded | Wait and retry, or reduce area |
-| `No suitable imagery` | No scenes found for your dates/area | Try different dates or higher `--cloud-threshold` |
+| `No suitable imagery` | No scenes found for dates/area | Try different dates or higher `--cloud-threshold` |
 | `Download failed` | Network or GEE download error | Check connection, retry |
-| `Insufficient disk space` | Not enough free space for downloads | Free up disk space |
+| `Insufficient disk space` | Not enough free space for cache | Free up disk space |
 
-## Cautions
+## Notes
 
-- **GEE credentials required**: You must set up a service account and enable Earth Engine API.
+- **GEE credentials**: Requires a service account with Earth Engine API enabled.
 - **Cloud coverage**: Scene-level cloud % can be misleading; SatChange checks **local** cloud coverage over your specific AOI.
-- **Data availability**: Some dates may have no imagery for your AOI.
-- **B11 resolution**: SWIR band (B11) is 20m vs 10m for visible/NIR — SatChange resamples automatically using bicubic interpolation.
+- **B11 resolution**: SWIR band is 20m vs 10m for visible/NIR — SatChange resamples automatically via bicubic interpolation.
+- **Free tier**: Designed to run entirely on GEE's free tier.
 
-## Supported Services
+## Tech Stack
 
-- **Google Earth Engine** (Sentinel-2 Surface Reflectance)
-- **Local disk caching** via `diskcache`
-- **Rich** progress indicators (auto-installed, graceful fallback if unavailable)
+- **Data source**: Google Earth Engine (Sentinel-2 Surface Reflectance)
+- **Caching**: `diskcache` with LRU eviction
+- **CLI**: `click` with grouped commands
+- **Visualization**: `matplotlib`, `opencv-python-headless`, `jinja2` (Leaflet maps), `rasterio` (GeoTIFF)
+- **Progress**: `rich` (auto-installed, graceful fallback)
+- **Testing**: `pytest` (310 tests)
 
-<!-- Cloud fallback section reviewed and updated -->
+## License
+
+MIT
