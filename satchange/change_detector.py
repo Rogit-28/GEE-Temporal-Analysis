@@ -332,7 +332,11 @@ class ChangeDetector:
                 "combined_mask": combined_mask,
                 "total_changed_pixels": int(total_changed_pixels),
                 "total_pixels": int(total_pixels),
-                "change_percentage": (total_changed_pixels / total_pixels) * 100,
+                "change_percentage": (
+                    (total_changed_pixels / total_pixels) * 100
+                    if total_pixels > 0
+                    else 0.0
+                ),
                 "change_type": "all",
             }
 
@@ -425,6 +429,19 @@ class ChangeDetector:
                 6: "urban_decline",
                 7: "ambiguous",
             }
+
+            if total_pixels == 0:
+                zero_stats = {
+                    class_name: {"pixels": 0, "percent": 0.0, "area_km2": 0.0}
+                    for class_name in class_names.values()
+                }
+                zero_stats["total_change"] = {"pixels": 0, "percent": 0.0, "area_km2": 0.0}
+                zero_stats["change_types"] = {
+                    "vegetation": {"pixels": 0, "percent": 0.0, "area_km2": 0.0},
+                    "water": {"pixels": 0, "percent": 0.0, "area_km2": 0.0},
+                    "urban": {"pixels": 0, "percent": 0.0, "area_km2": 0.0},
+                }
+                return zero_stats
 
             stats = {}
             for class_id, class_name in class_names.items():
@@ -593,7 +610,11 @@ class ChangeDetector:
             stats = {
                 "total_pixels": int(total_pixels),
                 "changed_pixels": int(changed_pixels),
-                "change_percentage": round((changed_pixels / total_pixels) * 100, 2),
+                "change_percentage": (
+                    round((changed_pixels / total_pixels) * 100, 2)
+                    if total_pixels > 0
+                    else 0.0
+                ),
                 "change_type": change_results["change_type"],
             }
 

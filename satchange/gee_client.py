@@ -634,7 +634,7 @@ class GEEClient:
         # Compute local cloud coverage using SCL band
         # SCL values: 3=cloud shadow, 8=cloud medium prob, 9=cloud high prob, 10=cirrus
         scl = image.select("SCL")
-        cloud_mask = scl.eq(3).Or(scl.eq(8)).Or(scl.eq(9)).Or(scl.eq(10)).Or(scl.eq(11))
+        cloud_mask = scl.eq(3).Or(scl.eq(8)).Or(scl.eq(9)).Or(scl.eq(10))
 
         stats = cloud_mask.reduceRegion(
             reducer=ee.Reducer.mean(),
@@ -750,7 +750,7 @@ class GEEClient:
                 image = ee.Image(image_id)
                 scl = image.select("SCL")
                 cloud_mask = (
-                    scl.eq(3).Or(scl.eq(8)).Or(scl.eq(9)).Or(scl.eq(10)).Or(scl.eq(11))
+                    scl.eq(3).Or(scl.eq(8)).Or(scl.eq(9)).Or(scl.eq(10))
                 )
 
                 stats = cloud_mask.reduceRegion(
@@ -831,7 +831,7 @@ class GEEClient:
             image = ee.Image(image_id)
             scl = image.select("SCL")
             cloud_mask = (
-                scl.eq(3).Or(scl.eq(8)).Or(scl.eq(9)).Or(scl.eq(10)).Or(scl.eq(11))
+                scl.eq(3).Or(scl.eq(8)).Or(scl.eq(9)).Or(scl.eq(10))
             )
 
             stats = cloud_mask.reduceRegion(

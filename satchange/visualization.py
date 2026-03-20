@@ -107,6 +107,8 @@ class EmbossRenderer:
             # Modulate alpha channel by emboss intensity (creates depth)
             emboss_alpha = (embossed / 255.0) * 180
             for class_id in colors.keys():
+                if class_id == 0:
+                    continue
                 mask = classification == class_id
                 overlay[mask, 3] = emboss_alpha[mask]
 

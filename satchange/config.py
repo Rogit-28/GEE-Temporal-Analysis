@@ -233,19 +233,36 @@ class Config:
             raise ConfigError(f"Service account key file not found: {key_file}")
 
         # Validate numeric ranges
-        if not 0 <= self.get("cloud_threshold", 20) <= 100:
+        cloud_threshold = self.get("cloud_threshold", 20)
+        if cloud_threshold is None or not isinstance(cloud_threshold, (int, float)):
+            raise ConfigError("cloud_threshold must be between 0 and 100")
+        if not 0 <= cloud_threshold <= 100:
             raise ConfigError("cloud_threshold must be between 0 and 100")
 
-        if not 10 <= self.get("pixel_size", 100) <= 1000:
+        pixel_size = self.get("pixel_size", 100)
+        if pixel_size is None or not isinstance(pixel_size, (int, float)):
+            raise ConfigError("pixel_size must be between 10 and 1000")
+        if not 10 <= pixel_size <= 1000:
             raise ConfigError("pixel_size must be between 10 and 1000")
 
-        if not 0.1 <= self.get("analysis.change_threshold", 0.2) <= 1.0:
+        change_threshold = self.get("analysis.change_threshold", 0.2)
+        if change_threshold is None or not isinstance(change_threshold, (int, float)):
+            raise ConfigError("change_threshold must be between 0.1 and 1.0")
+        if not 0.1 <= change_threshold <= 1.0:
             raise ConfigError("change_threshold must be between 0.1 and 1.0")
 
-        if not 0.0 <= self.get("analysis.emboss_intensity", 1.0) <= 2.0:
+        emboss_intensity = self.get("analysis.emboss_intensity", 1.0)
+        if emboss_intensity is None or not isinstance(emboss_intensity, (int, float)):
+            raise ConfigError("emboss_intensity must be between 0.0 and 2.0")
+        if not 0.0 <= emboss_intensity <= 2.0:
             raise ConfigError("emboss_intensity must be between 0.0 and 2.0")
 
-        if not 30 <= self.get("analysis.min_temporal_gap_days", 180) <= 365:
+        min_temporal_gap_days = self.get("analysis.min_temporal_gap_days", 180)
+        if min_temporal_gap_days is None or not isinstance(
+            min_temporal_gap_days, (int, float)
+        ):
+            raise ConfigError("min_temporal_gap_days must be between 30 and 365")
+        if not 30 <= min_temporal_gap_days <= 365:
             raise ConfigError("min_temporal_gap_days must be between 30 and 365")
 
     def get_cache_directory(self) -> str:

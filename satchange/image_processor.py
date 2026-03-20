@@ -451,8 +451,8 @@ class ImageProcessor:
                     bands_b_norm[band] = band_b_matched
                 else:
                     # Keep QA band as-is
-                    bands_a_norm[band] = band_a
-                    bands_b_norm[band] = band_b
+                    bands_a_norm[band] = bands_a[band]
+                    bands_b_norm[band] = bands_b[band]
 
             return bands_a_norm, bands_b_norm
 

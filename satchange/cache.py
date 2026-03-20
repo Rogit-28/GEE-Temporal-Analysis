@@ -227,8 +227,12 @@ class ImageCache:
                 ),
             }
 
-            # Get volume information
-            volume = self.cache.volume()
+            # Get volume information (diskcache compatibility)
+            volume = (
+                self.cache.volume()
+                if hasattr(self.cache, "volume")
+                else self._get_directory_size()
+            )
 
             # Count total items
             total_items = len(self.cache)
