@@ -9,14 +9,11 @@ import numpy as np
 import os
 import cv2
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-from typing import Dict, Any, Tuple, Optional, List
+from typing import Dict, Any, Optional, List, Union, Type
 import logging
-from datetime import datetime
 import base64
 from io import BytesIO
 from PIL import Image
-import json
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +55,9 @@ class EmbossRenderer:
             embossed = cv2.filter2D(mask_uint8, cv2.CV_32F, self.emboss_kernel)
 
             # Normalize to 0-255 range
-            embossed = cv2.normalize(embossed, None, 0, 255, cv2.NORM_MINMAX)
+            embossed = cv2.normalize(
+                embossed, mask_uint8.copy(), 0, 255, cv2.NORM_MINMAX
+            )
 
             # Apply intensity multiplier
             embossed = np.clip(embossed * self.intensity, 0, 255).astype(np.uint8)
@@ -2170,6 +2169,7 @@ class GeoTIFFExporter:
             # Determine if we're exporting 4-band (RGB + mask) or single-band
             export_4band = bands is not None and "B4" in bands and "B3" in bands
 
+            dtype: Union[Type[np.uint8], str]
             if export_4band:
                 logger.info("Exporting 4-band GeoTIFF (RGB + classification mask)")
                 band_count = 4
@@ -2178,7 +2178,7 @@ class GeoTIFFExporter:
             else:
                 logger.info("Exporting single-band GeoTIFF (classification only)")
                 band_count = 1
-                dtype = classification.dtype
+                dtype = str(classification.dtype)
 
             # Create transform if not provided
             if "transform" not in metadata:
@@ -2226,6 +2226,7 @@ class GeoTIFFExporter:
             ) as dst:
                 if export_4band:
                     # Normalize and write RGB bands
+                    assert bands is not None
                     red = self._normalize_band(bands["B4"])
                     green = self._normalize_band(bands["B3"])
                     # Use B2 if available, otherwise use B4 as fallback
@@ -2310,6 +2311,32 @@ class VisualizationManager:
         self.interactive_visualizer = InteractiveVisualizer(emboss_intensity)
         self.geotiff_exporter = GeoTIFFExporter()
 
+    @staticmethod
+    def _ensure_stats_schema(
+        stats: Dict[str, Any], classification: np.ndarray
+    ) -> Dict[str, Any]:
+        """Ensure stats include keys required by interactive templates.
+
+        For single-type runs, CLI/export may provide compact stats. This method
+        normalizes them to the full classification-based schema used by HTML.
+        """
+        required_keys = [
+            "total_change",
+            "vegetation_growth",
+            "vegetation_loss",
+            "water_expansion",
+            "water_reduction",
+            "urban_development",
+            "urban_decline",
+            "change_types",
+        ]
+        if all(key in stats for key in required_keys):
+            return stats
+
+        from .change_detector import ChangeDetector
+
+        return ChangeDetector().compute_change_statistics(classification)
+
     def generate_all_outputs(
         self,
         bands_a: Dict[str, np.ndarray],
@@ -2320,8 +2347,8 @@ class VisualizationManager:
         center_lat: float,
         center_lon: float,
         output_dir: str,
-        formats: List[str] = None,
-        output_prefix: str = None,
+        formats: Optional[List[str]] = None,
+        output_prefix: Optional[str] = None,
     ) -> Dict[str, str]:
         """Generate all visualization outputs.
 
@@ -2349,10 +2376,9 @@ class VisualizationManager:
             # Default prefix if not provided
             prefix = output_prefix if output_prefix else "output"
 
-            # Apply emboss effect
-            from .change_detector import ChangeDetector
+            normalized_stats = self._ensure_stats_schema(stats, classification)
 
-            detector = ChangeDetector()
+            # Apply emboss effect
             change_mask = classification > 0
             embossed = self.static_visualizer.emboss_renderer.apply_emboss_effect(
                 change_mask
@@ -2378,7 +2404,7 @@ class VisualizationManager:
                     bands_b,
                     classification,
                     embossed,
-                    stats,
+                    normalized_stats,
                     center_lat,
                     center_lon,
                     interactive_path,

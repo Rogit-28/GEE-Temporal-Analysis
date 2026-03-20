@@ -32,6 +32,7 @@ pip install -e .
 
 ```bash
 satchange config init --service-account-key /path/to/key.json --project-id your-project
+satchange config show
 ```
 
 ### 2) Inspect Available Imagery
@@ -81,7 +82,7 @@ satchange analyze \
   --dry-run
 ```
 
-Checks cloud coverage and resolves dates, then reports what *would* happen without downloading imagery.
+Validates local CLI inputs and reports what *would* happen without downloading imagery or making network calls.
 
 ### Urban Change Detection
 
@@ -112,13 +113,18 @@ satchange/
   cache.py             # Disk-based LRU cache with diskcache
   utils.py             # Coordinate parsing, logging, JSON encoding
   progress.py          # Rich progress bars with fallback
-tests/
-  conftest.py          # Shared fixtures and mocks
-  test_*.py            # 310 tests across 8 test modules
 examples/
   basic_usage.py       # Simple analysis workflow
   advanced_analysis.py # Multi-region, multi-type analysis
   integration_example.py # End-to-end pipeline
+```
+
+## Quality Checks
+
+```bash
+black --check satchange examples
+flake8 satchange examples
+mypy satchange
 ```
 
 ## Cloud Coverage Fallback
@@ -154,7 +160,12 @@ In interactive mode the CLI presents alternatives for selection; in `--non-inter
 - **CLI**: `click` with grouped commands
 - **Visualization**: `matplotlib`, `opencv-python-headless`, `jinja2` (Leaflet maps), `rasterio` (GeoTIFF)
 - **Progress**: `rich` (auto-installed, graceful fallback)
-- **Testing**: `pytest` (310 tests)
+- **Quality tooling**: `black`, `flake8`, `mypy`
+
+## Additional Documentation
+
+- `API_REFERENCE.md` — command and option reference
+- `RUN_INSTRUCTIONS.md` — setup, run commands, troubleshooting
 
 ## License
 

@@ -7,7 +7,6 @@ if Rich is not installed.
 
 import logging
 from contextlib import contextmanager
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +96,7 @@ def progress_bar(description: str, total: int):
 
 def print_status(message: str, style: str = "bold green"):
     """Print a styled status message."""
-    if RICH_AVAILABLE:
+    if RICH_AVAILABLE and console is not None:
         console.print(f"[{style}]{message}[/{style}]")
     else:
         import click
@@ -107,7 +106,7 @@ def print_status(message: str, style: str = "bold green"):
 
 def print_error(message: str):
     """Print a styled error message."""
-    if RICH_AVAILABLE:
+    if RICH_AVAILABLE and console is not None:
         console.print(f"[bold red]{message}[/bold red]")
     else:
         import click

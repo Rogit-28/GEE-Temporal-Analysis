@@ -7,7 +7,7 @@ to identify temporal changes in satellite imagery.
 
 import numpy as np
 import logging
-from typing import Dict, Any, Tuple, Optional, List
+from typing import Dict, Any
 from enum import Enum
 
 logger = logging.getLogger(__name__)

@@ -135,7 +135,7 @@ class Config:
             Configuration value or default
         """
         keys = key.split(".")
-        value = self._config
+        value: Any = self._config
 
         try:
             for k in keys:
@@ -152,13 +152,15 @@ class Config:
             value: Value to set
         """
         keys = key.split(".")
-        config = self._config
+        config: Dict[str, Any] = self._config
 
         # Navigate to parent of the final key
         for k in keys[:-1]:
-            if k not in config:
-                config[k] = {}
-            config = config[k]
+            nested = config.get(k)
+            if not isinstance(nested, dict):
+                nested = {}
+                config[k] = nested
+            config = nested
 
         # Set the final value
         config[keys[-1]] = value

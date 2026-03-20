@@ -10,7 +10,6 @@ import logging
 import time
 from typing import Dict, List, Tuple, Optional, Any
 from datetime import datetime, timedelta
-import json
 
 from .config import Config
 
@@ -123,7 +122,7 @@ class GEEClient:
         center_lon: float,
         pixel_size: int,
         resolution_meters: int = 10,
-    ) -> ee.Geometry.Polygon:
+    ) -> Any:
         """Convert center point and pixel dimensions to geographic bounding box.
 
         Args:
@@ -133,7 +132,7 @@ class GEEClient:
             resolution_meters: Spatial resolution (Sentinel-2 = 10m)
 
         Returns:
-            ee.Geometry.Polygon: Bounding box for GEE query
+            Bounding box geometry for GEE query
         """
         from geopy.distance import distance
 
@@ -162,7 +161,7 @@ class GEEClient:
 
     def query_imagery(
         self,
-        bbox: ee.Geometry.Polygon,
+        bbox: Any,
         start_date: datetime,
         end_date: datetime,
         cloud_threshold: int = 20,
@@ -205,6 +204,8 @@ class GEEClient:
         try:
             # Get collection info
             collection_info = collection.getInfo()
+            if not isinstance(collection_info, dict):
+                return []
 
             if "features" not in collection_info:
                 return []
@@ -247,7 +248,7 @@ class GEEClient:
         collection: ee.ImageCollection,
         start_date: datetime,
         end_date: datetime,
-        cloud_threshold: int = None,
+        cloud_threshold: Optional[int] = None,
     ) -> Tuple[ee.Image, ee.Image]:
         """Select optimal image pair from collection.
 
@@ -268,8 +269,6 @@ class GEEClient:
         Raises:
             ValueError: If no valid image pair can be found within thresholds
         """
-        from datetime import timedelta
-
         # Get cloud threshold from config if not provided
         if cloud_threshold is None:
             cloud_threshold = self.config.get("cloud_threshold", 20)
@@ -394,15 +393,15 @@ class GEEClient:
     def download_image(
         self,
         image: ee.Image,
-        bbox: ee.Geometry.Polygon,
-        bands: List[str] = None,
+        bbox: Any,
+        bands: Optional[List[str]] = None,
         scale: int = 10,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Download image bands from GEE as numpy arrays.
 
         Args:
             image: ee.Image object
-            bbox: ee.Geometry.Polygon defining AOI
+            bbox: AOI geometry
             bands: List of band names to download
             scale: Resolution in meters (10m for Sentinel-2)
 
@@ -493,7 +492,11 @@ class GEEClient:
         """
         try:
             info = image.getInfo()
+            if not isinstance(info, dict):
+                return {}
             properties = info.get("properties", {})
+            if not isinstance(properties, dict):
+                properties = {}
 
             # Get date from system:time_start (epoch milliseconds)
             time_start = properties.get("system:time_start")
@@ -564,6 +567,7 @@ class GEEClient:
         center: Tuple[float, float],
         size: int = 150,
         resolution: int = 10,
+        cloud_threshold: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Check local cloud coverage for a specific date WITHOUT downloading image.
 
@@ -575,6 +579,8 @@ class GEEClient:
             center: Tuple of (latitude, longitude)
             size: AOI size in pixels (default 150 = 1.5km at 10m resolution)
             resolution: Pixel resolution in meters (default 10)
+            cloud_threshold: Max local cloud % to consider image "good". If None,
+                uses config cloud_threshold (default 20).
 
         Returns:
             Dictionary with:
@@ -582,9 +588,12 @@ class GEEClient:
                 - image_id: Full GEE image ID (or None if not found)
                 - scene_cloud_pct: Scene-level cloud % from metadata
                 - local_cloud_pct: Local cloud % at AOI (computed from SCL)
-                - is_good: True if local_cloud_pct < 15%
+                - is_good: True if local_cloud_pct < cloud_threshold
                 - found: True if an image was found for that date
         """
+        if cloud_threshold is None:
+            cloud_threshold = float(self.config.get("cloud_threshold", 20))
+
         lat, lon = center
 
         # Create AOI geometry
@@ -640,10 +649,11 @@ class GEEClient:
             local_cloud_fraction * 100 if local_cloud_fraction is not None else 0
         )
 
-        is_good = local_cloud_pct < 15.0
+        is_good = local_cloud_pct < cloud_threshold
 
         logger.info(
-            f"Date {date}: scene_cloud={scene_cloud:.1f}%, local_cloud={local_cloud_pct:.1f}%, good={is_good}"
+            f"Date {date}: scene_cloud={scene_cloud:.1f}%, local_cloud={local_cloud_pct:.1f}%, "
+            f"threshold={cloud_threshold:.1f}%, good={is_good}"
         )
 
         return {
@@ -970,7 +980,9 @@ class GEEClient:
         logger.info(f"Strategy 1 — Graduated threshold: trying {thresholds} on {date}")
 
         for threshold in thresholds:
-            result = self.check_local_cloud(date, center, size, resolution)
+            result = self.check_local_cloud(
+                date, center, size, resolution, cloud_threshold=threshold
+            )
 
             if not result["found"]:
                 # No image exists for this date at all — skip to Strategy 2

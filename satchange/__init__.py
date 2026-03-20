@@ -1,8 +1,8 @@
 """
 SatChange - CLI tool for detecting temporal changes in satellite imagery.
 
-A Python-based CLI tool that enables users to detect and visualize temporal 
-changes in satellite imagery for specified geographic areas using Google Earth Engine.
+A Python-based CLI tool that enables users to detect and visualize temporal
+changes in satellite imagery for specified geographic areas.
 """
 
 __version__ = "0.1.0"

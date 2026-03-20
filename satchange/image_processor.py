@@ -7,8 +7,7 @@ coregistration, and radiometric normalization.
 
 import numpy as np
 import logging
-from typing import Dict, Any, Tuple, Optional
-from datetime import datetime
+from typing import Dict, Any, Tuple
 from scipy.ndimage import zoom
 
 logger = logging.getLogger(__name__)
@@ -538,31 +537,31 @@ class ImageProcessor:
             Dictionary with quality metrics
         """
         try:
-            quality_metrics = {
+            quality_metrics: Dict[str, Any] = {
                 "total_pixels": 0,
                 "valid_pixels": 0,
-                "cloud_coverage": 0,
-                "brightness_mean": 0,
-                "brightness_std": 0,
+                "cloud_coverage": 0.0,
+                "brightness_mean": 0.0,
+                "brightness_std": 0.0,
                 "has_data": False,
             }
 
             # Calculate basic statistics
             total_pixels = 0
             valid_pixels = 0
-            brightness_sum = 0
-            brightness_sum_sq = 0
+            brightness_sum = 0.0
+            brightness_sum_sq = 0.0
 
             for band_name, band_array in bands.items():
                 if band_name != "QA60":  # Exclude QA band from statistics
                     total_pixels += band_array.size
-                    valid_pixels += np.sum(band_array > 0)
+                    valid_pixels += int(np.sum(band_array > 0))
 
                     # Calculate brightness statistics
                     valid_values = band_array[band_array > 0]
                     if len(valid_values) > 0:
-                        brightness_sum += np.sum(valid_values)
-                        brightness_sum_sq += np.sum(valid_values**2)
+                        brightness_sum += float(np.sum(valid_values))
+                        brightness_sum_sq += float(np.sum(valid_values**2))
 
             if total_pixels > 0:
                 quality_metrics["total_pixels"] = total_pixels

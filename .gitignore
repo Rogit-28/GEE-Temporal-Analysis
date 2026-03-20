@@ -21,12 +21,21 @@ build/
 
 # Testing
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 
 # Credentials — NEVER commit
 satchange-fda71ff162bb.json
 *.json.bak
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*service-account*.json
+*credentials*.json
 
 # OS / local artifacts
 nul
@@ -36,3 +45,8 @@ Thumbs.db
 # Tooling
 mise.toml
 .sisyphus/
+
+# Generated analysis artifacts
+results/
+integration-test/
+test-output/

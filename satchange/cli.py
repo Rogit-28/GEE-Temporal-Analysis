@@ -15,6 +15,7 @@ from datetime import datetime
 from .config import Config
 from .gee_client import (
     GEEClient,
+    AuthenticationError,
     QuotaExceededError,
     RateLimitError,
     NoImageryError,
@@ -24,8 +25,14 @@ from .cache import CacheManager
 from .image_processor import ImageProcessor
 from .change_detector import ChangeDetector
 from .visualization import VisualizationManager
-from .utils import setup_logging, parse_date, parse_coordinates, NumpyJSONEncoder
-from .progress import spinner, progress_bar, print_status, print_error
+from .utils import (
+    setup_logging,
+    parse_date,
+    parse_coordinates,
+    validate_cloud_threshold,
+    NumpyJSONEncoder,
+)
+from .progress import spinner, progress_bar
 
 
 def format_location_name(lat: float, lon: float) -> str:
@@ -38,7 +45,7 @@ def format_location_name(lat: float, lon: float) -> str:
 def generate_output_prefix(
     name: Optional[str], lat: float, lon: float, start_date: str, end_date: str
 ) -> str:
-    """Generate output filename prefix following PRD naming convention.
+    """Generate output filename prefix for analysis artifacts.
 
     Format: {location_name}_{start_date}_{end_date}
     """
@@ -70,9 +77,21 @@ def main(ctx: click.Context, verbose: bool, config_file: Optional[str]) -> None:
     config = Config(config_file)
     ctx.obj["config"] = config
 
-    # Initialize GEE client if authenticated
+    # Initialize GEE client if authentication config exists.
+    # If credentials are stale/missing, keep CLI bootable for help/config commands.
     if config.is_authenticated():
-        ctx.obj["gee_client"] = GEEClient(config)
+        try:
+            ctx.obj["gee_client"] = GEEClient(config)
+        except AuthenticationError as e:
+            click.echo(
+                f"[WARN] Authentication unavailable: {e}",
+                err=True,
+            )
+            click.echo(
+                "[WARN] Use 'satchange config init' to refresh credentials.",
+                err=True,
+            )
+            ctx.obj["gee_client"] = None
     else:
         ctx.obj["gee_client"] = None
 
@@ -120,6 +139,47 @@ def init(
         sys.exit(1)
 
 
+@config.command()
+@click.pass_context
+def show(ctx: click.Context) -> None:
+    """
+    Show current SatChange configuration.
+    """
+    config = ctx.obj["config"]
+    gee_client = ctx.obj.get("gee_client")
+
+    try:
+        config_dict = config.to_dict()
+        cache_cfg = config_dict.get("cache", {})
+        analysis_cfg = config_dict.get("analysis", {})
+
+        click.echo("Current SatChange configuration:")
+        click.echo(f"  Authenticated: {'Yes' if gee_client else 'No'}")
+        click.echo(
+            f"  Service account email: {config_dict.get('service_account_email') or 'Not set'}"
+        )
+        click.echo(f"  Project ID: {config_dict.get('project_id') or 'Not set'}")
+        click.echo(
+            f"  Service account key: {config_dict.get('service_account_key') or 'Not set'}"
+        )
+        click.echo(f"  Cloud threshold: {config_dict.get('cloud_threshold', 20)}%")
+        click.echo(f"  Pixel size: {config_dict.get('pixel_size', 100)}")
+        click.echo(f"  Cache directory: {cache_cfg.get('directory', 'Not set')}")
+        click.echo(f"  Cache max size: {cache_cfg.get('max_size_gb', 5)} GB")
+        click.echo(f"  Change threshold: {analysis_cfg.get('change_threshold', 0.2)}")
+        click.echo(f"  Emboss intensity: {analysis_cfg.get('emboss_intensity', 1.0)}")
+        click.echo(
+            f"  Min temporal gap: {analysis_cfg.get('min_temporal_gap_days', 180)} days"
+        )
+
+    except KeyboardInterrupt:
+        click.echo("\nOperation cancelled by user", err=True)
+        sys.exit(130)
+    except Exception as e:
+        click.echo(f"[ERROR] Failed to show configuration: {e}", err=True)
+        sys.exit(1)
+
+
 @main.command()
 @click.option(
     "--center", required=True, type=str, help="Lat,Lon (e.g., 13.0827,80.2707)"
@@ -160,7 +220,7 @@ def inspect(
 
         # Display results
         click.echo(f"Found {len(scenes)} clear scenes")
-        click.echo(f"\nTop 5 clearest:")
+        click.echo("\nTop 5 clearest:")
         for scene in sorted(scenes, key=lambda x: x["cloud_coverage"])[:5]:
             date = scene["date"]
             cloud_pct = scene["cloud_coverage"]
@@ -265,7 +325,7 @@ def prompt_date_selection(alternatives: list, original_date: str, label: str) ->
 @click.option(
     "--dry-run",
     is_flag=True,
-    help="Show what would be done without executing (check dates, cloud coverage only)",
+    help="Show what would be done using local validation only (no GEE/network calls)",
 )
 @click.pass_context
 def analyze(
@@ -288,13 +348,9 @@ def analyze(
     Requires explicit dates (--date-a and --date-b). The tool will check local
     cloud coverage at your area of interest and suggest alternatives if needed.
     """
-    gee_client = ctx.obj["gee_client"]
-    if not gee_client:
-        click.echo("[ERROR] Not authenticated with Google Earth Engine", err=True)
-        click.echo("Run 'satchange config init' first", err=True)
-        sys.exit(1)
-
     try:
+        gee_client = ctx.obj["gee_client"]
+
         # Parse inputs
         lat, lon = parse_coordinates(center)
 
@@ -302,7 +358,10 @@ def analyze(
         from .utils import validate_pixel_size, validate_threshold
 
         validate_pixel_size(size)
+        validate_cloud_threshold(cloud_threshold)
         validate_threshold(threshold, 0.1, 1.0)
+        datetime.strptime(date_a, "%Y-%m-%d")
+        datetime.strptime(date_b, "%Y-%m-%d")
 
         # Create output directory
         os.makedirs(output, exist_ok=True)
@@ -316,6 +375,30 @@ def analyze(
         click.echo(f"  Change type: {change_type}")
         click.echo(f"  Detection threshold: {threshold}")
 
+        if dry_run:
+            dry_run_prefix = generate_output_prefix(name, lat, lon, date_a, date_b)
+            click.echo("\n[DRY RUN] Local validation complete.")
+            click.echo("  Cloud checks skipped (no network calls in dry-run mode).")
+            click.echo(
+                f"  GEE authentication: {'available' if gee_client else 'not configured'}"
+            )
+            click.echo(f"  Planned output prefix: {dry_run_prefix}")
+            click.echo("\n[DRY RUN] Would execute the following:")
+            click.echo(f"  Download images for dates: {date_a}, {date_b}")
+            click.echo(f"  Area: {size}x{size} pixels at ({lat}, {lon})")
+            click.echo(f"  Change type: {change_type}")
+            click.echo(f"  Detection threshold: {threshold}")
+            click.echo(f"  Output directory: {output}")
+            click.echo(
+                "\n[DRY RUN] No images downloaded, no network calls made, no analysis performed."
+            )
+            return
+
+        if not gee_client:
+            click.echo("[ERROR] Not authenticated with Google Earth Engine", err=True)
+            click.echo("Run 'satchange config init' first", err=True)
+            sys.exit(1)
+
         # ========================================
         # STEP 1: Check local cloud coverage
         # ========================================
@@ -325,12 +408,16 @@ def analyze(
 
         # Check Date A
         with spinner(f"Checking cloud coverage for {date_a}..."):
-            check_a = gee_client.check_local_cloud(date_a, center_coords, size)
+            check_a = gee_client.check_local_cloud(
+                date_a, center_coords, size, cloud_threshold=cloud_threshold
+            )
         display_cloud_check_result(check_a, "Date A")
 
         # Check Date B
         with spinner(f"Checking cloud coverage for {date_b}..."):
-            check_b = gee_client.check_local_cloud(date_b, center_coords, size)
+            check_b = gee_client.check_local_cloud(
+                date_b, center_coords, size, cloud_threshold=cloud_threshold
+            )
         display_cloud_check_result(check_b, "Date B")
 
         # Track final dates to use
@@ -457,17 +544,6 @@ def analyze(
             name, lat, lon, final_date_a, final_date_b
         )
         click.echo(f"  Output prefix: {output_prefix}")
-
-        # Dry-run: report what would be done and exit
-        if dry_run:
-            click.echo("\n[DRY RUN] Would execute the following:")
-            click.echo(f"  Download images for dates: {final_date_a}, {final_date_b}")
-            click.echo(f"  Area: {size}x{size} pixels at ({lat}, {lon})")
-            click.echo(f"  Change type: {change_type}")
-            click.echo(f"  Detection threshold: {threshold}")
-            click.echo(f"  Output directory: {output}")
-            click.echo("\n[DRY RUN] No images downloaded, no analysis performed.")
-            return
 
         # Check disk space before downloading
         from .utils import check_disk_space
@@ -620,7 +696,8 @@ def analyze(
                 classification[change_results["development_mask"]] = 5
                 classification[change_results["decline_mask"]] = 6
 
-            # Compute statistics for the specific change type
+            # Preserve single-type summary schema for CLI output compatibility.
+            # Visualization/export paths normalize schema independently.
             change_stats = change_summary["statistics"]
             change_stats["total_change"] = {
                 "pixels": change_stats["changed_pixels"],
@@ -632,8 +709,16 @@ def analyze(
         click.echo("Saving analysis results...")
 
         # Save band arrays
-        np.save(os.path.join(output, f"{output_prefix}_bands_a.npy"), band_arrays_a)
-        np.save(os.path.join(output, f"{output_prefix}_bands_b.npy"), band_arrays_b)
+        np.save(
+            os.path.join(output, f"{output_prefix}_bands_a.npy"),
+            np.array(band_arrays_a, dtype=object),
+            allow_pickle=True,
+        )
+        np.save(
+            os.path.join(output, f"{output_prefix}_bands_b.npy"),
+            np.array(band_arrays_b, dtype=object),
+            allow_pickle=True,
+        )
 
         # Save classification
         np.save(
@@ -668,13 +753,13 @@ def analyze(
             )
 
         # Display results
-        click.echo(f"\n[OK] Change detection completed successfully!")
+        click.echo("\n[OK] Change detection completed successfully!")
         click.echo(f"Results saved to: {output}")
         click.echo(f"Cache usage: {cache_stats.get('usage_percent', 0):.1f}%")
 
         # Display change summary
         if change_type == "all":
-            click.echo(f"\n=== Change Detection Results ===")
+            click.echo("\n=== Change Detection Results ===")
             click.echo(
                 f"Total area changed: {change_stats['total_change']['percent']}%"
             )
@@ -690,17 +775,21 @@ def analyze(
         else:
             click.echo(f"\n=== {change_type.title()} Change Detection Results ===")
             click.echo(
-                f"Total {change_type} changes: {change_stats['change_percentage']}%"
+                f"Total {change_type} changes: {change_stats.get('change_percentage', 0)}%"
             )
             if change_type == "vegetation":
-                click.echo(f"Vegetation growth: {change_stats['growth_pixels']} pixels")
-                click.echo(f"Vegetation loss: {change_stats['loss_pixels']} pixels")
-            elif change_type == "water":
                 click.echo(
-                    f"Water expansion: {change_stats['expansion_pixels']} pixels"
+                    f"Vegetation growth: {change_stats.get('growth_pixels', 0)} pixels"
                 )
                 click.echo(
-                    f"Water reduction: {change_stats['reduction_pixels']} pixels"
+                    f"Vegetation loss: {change_stats.get('loss_pixels', 0)} pixels"
+                )
+            elif change_type == "water":
+                click.echo(
+                    f"Water expansion: {change_stats.get('expansion_pixels', 0)} pixels"
+                )
+                click.echo(
+                    f"Water reduction: {change_stats.get('reduction_pixels', 0)} pixels"
                 )
             elif change_type == "urban":
                 click.echo(
@@ -979,6 +1068,7 @@ def status(ctx: click.Context) -> None:
 
     except Exception as e:
         click.echo(f"[ERROR] Failed to get cache status: {e}", err=True)
+        sys.exit(1)
 
 
 @cache.command()
@@ -998,6 +1088,7 @@ def clear(ctx: click.Context) -> None:
 
     except Exception as e:
         click.echo(f"[ERROR] Failed to clear cache: {e}", err=True)
+        sys.exit(1)
 
 
 @cache.command()
@@ -1013,6 +1104,7 @@ def cleanup(ctx: click.Context) -> None:
         cache_manager.close()
     except Exception as e:
         click.echo(f"[ERROR] Cache cleanup failed: {e}", err=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

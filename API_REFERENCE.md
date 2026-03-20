@@ -26,6 +26,15 @@ satchange config init --service-account-key /path/to/key.json --project-id your-
 
 ---
 
+### `satchange config show`
+Display the currently loaded configuration (auth state, thresholds, cache, analysis settings).
+
+```bash
+satchange config show
+```
+
+---
+
 ### `satchange inspect`
 Preview available Sentinel-2 scenes for an AOI and date range.
 
@@ -66,7 +75,7 @@ satchange analyze \
 - `--output` (required): Output directory
 - `--name`: Location name used in output filenames (default: `lat_lon`)
 - `--non-interactive`: Auto-select recommended alternatives without prompting
-- `--dry-run`: Check cloud coverage and resolve dates, then exit without downloading or analyzing
+- `--dry-run`: Validate local inputs and print the analysis plan, then exit without network calls, downloading, or analyzing
 
 **Change Types**
 | Type | Index | Bands | Classes |
@@ -91,10 +100,9 @@ Where `{prefix}` = `{name}_{date_a}_{date_b}` (e.g., `chennai_2022-02-04_2024-10
 **Dry Run**
 
 With `--dry-run`, the command:
-1. Checks local cloud coverage for both dates
-2. Finds alternative dates if needed
-3. Reports the resolved dates and analysis plan
-4. Exits **without** downloading imagery or running change detection
+1. Validates coordinates, dates, thresholds, and output path locally
+2. Reports the planned analysis settings and output prefix
+3. Exits **without** network calls, downloading imagery, or running change detection
 
 ```bash
 satchange analyze --center "13.0827,80.2707" --size 100 \
@@ -197,6 +205,18 @@ Searches incrementally wider windows (±2w, ±1m, ±2m, ±3m) for clearer dates.
 
 ### `check_disk_space(path, required_mb=100.0)`
 Checks available disk space. Returns `{"available_mb", "required_mb", "sufficient"}`.
+
+---
+
+## Quality Checks
+
+Run from repository root:
+
+```bash
+black --check satchange examples
+flake8 satchange examples
+mypy satchange
+```
 
 ---
 

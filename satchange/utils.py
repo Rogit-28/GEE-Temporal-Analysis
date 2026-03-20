@@ -9,7 +9,7 @@ import logging
 import sys
 import json
 import numpy as np
-from typing import Any, Dict, Tuple, Optional
+from typing import Any, Dict, Tuple
 from datetime import datetime, timedelta
 import re
 
@@ -113,7 +113,7 @@ def parse_date(date_string: str) -> Tuple[datetime, datetime]:
         # Limit date range to reasonable maximum (10 years)
         max_range = datetime.now() - timedelta(days=365 * 10)
         if start_date < max_range:
-            raise ValueError(f"Start date too far in the past (max 10 years)")
+            raise ValueError("Start date too far in the past (max 10 years)")
 
         return start_date, end_date
 
