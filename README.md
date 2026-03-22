@@ -10,6 +10,7 @@ SatChange is a Python CLI that compares how a place changed between two dates us
 If you track urban growth, vegetation loss, or water change, SatChange gives you a reproducible workflow with AOI-local cloud checks, fallback date recovery, and cached downloads to reduce repeated work.
 
 ![SatChange demo change map](docs/assets/demo-change-map.png)
+![SatChange web viewer demo](docs/assets/demo-web-viewer.png)
 
 ## Table of Contents
 

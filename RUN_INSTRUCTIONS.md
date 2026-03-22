@@ -157,17 +157,7 @@ Latest local verified baseline for this repo:
 - Use `--dry-run` before expensive/credentialed runs.
 - Do not rely on legacy pickled `*_bands_*.npy` for export; use `.npz` artifacts.
 
-## 10) Release checklist
-
-- [ ] `README.md`, `RUN_INSTRUCTIONS.md`, and `API_REFERENCE.md` are consistent
-- [ ] Demo commands and output snippets are verified
-- [ ] Internal doc links resolve
-- [ ] `black`, `flake8`, `mypy`, and `pytest` pass
-- [ ] Web build succeeds (`cd web && npm run build`)
-- [ ] No credentials or secrets present in tracked files
-- [ ] Release notes summarize user-facing CLI/output changes
-
-## 11) References
+## 10) References
 
 - [README.md](README.md)
 - [API_REFERENCE.md](API_REFERENCE.md)
