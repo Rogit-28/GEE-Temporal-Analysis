@@ -1,0 +1,2 @@
+[ERROR] Not authenticated with Google Earth Engine
+Run 'satchange config init' first

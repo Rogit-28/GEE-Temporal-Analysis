@@ -1,0 +1,23 @@
+2026-03-22 11:34:35,201 - satchange.gee_client - INFO - Successfully authenticated with Google Earth Engine
+Starting change detection analysis...
+  Location: 13.0827, 80.2707
+  Area: 100x100 pixels
+  Requested dates: 2022-02-04 and 2024-10-26
+  Cloud threshold: 15%
+  Output: .\results
+  Change type: all
+  Detection threshold: 0.2
+
+[DRY RUN] Local validation complete.
+  Cloud checks skipped (no network calls in dry-run mode).
+  GEE authentication: available
+  Planned output prefix: 13.0827_80.2707_2022-02-04_2024-10-26
+
+[DRY RUN] Would execute the following:
+  Download images for dates: 2022-02-04, 2024-10-26
+  Area: 100x100 pixels at (13.0827, 80.2707)
+  Change type: all
+  Detection threshold: 0.2
+  Output directory: .\results
+
+[DRY RUN] No images downloaded, no network calls made, no analysis performed.

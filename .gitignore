@@ -54,6 +54,9 @@ test-output/
 # Next.js local artifacts
 web/node_modules/
 web/.next/
+web/.next-dev.log
+web/tsconfig.tsbuildinfo
+web/.env.local
 # Sensitive: local creds and logs
 satchange-97f78137953f.json
 satchange-*.json

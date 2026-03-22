@@ -15,6 +15,9 @@ import base64
 from io import BytesIO
 from PIL import Image
 
+from .web_bundle import export_web_bundle
+from .utils import safe_join, sanitize_output_name
+
 logger = logging.getLogger(__name__)
 
 
@@ -2351,6 +2354,7 @@ class VisualizationManager:
         output_dir: str,
         formats: Optional[List[str]] = None,
         output_prefix: Optional[str] = None,
+        include_web_bundle: bool = True,
     ) -> Dict[str, str]:
         """Generate all visualization outputs.
 
@@ -2365,6 +2369,7 @@ class VisualizationManager:
             output_dir: Output directory path
             formats: List of formats to generate ['static', 'interactive', 'geotiff']
             output_prefix: Optional prefix for output filenames
+            include_web_bundle: Generate JobID web bundle manifest/index
 
         Returns:
             Dictionary mapping format to output file path
@@ -2376,7 +2381,7 @@ class VisualizationManager:
                 formats = ["static", "interactive", "geotiff"]
 
             # Default prefix if not provided
-            prefix = output_prefix if output_prefix else "output"
+            prefix = sanitize_output_name(output_prefix) if output_prefix else "output"
 
             normalized_stats = self._ensure_stats_schema(stats, classification)
 
@@ -2390,7 +2395,7 @@ class VisualizationManager:
 
             # Generate static visualization
             if "static" in formats:
-                static_path = os.path.join(output_dir, f"{prefix}_visualization.png")
+                static_path = safe_join(output_dir, f"{prefix}_visualization.png")
                 self.static_visualizer.generate_comparison_plot(
                     bands_a, bands_b, classification, embossed, static_path
                 )
@@ -2398,9 +2403,7 @@ class VisualizationManager:
 
             # Generate interactive HTML
             if "interactive" in formats:
-                interactive_path = os.path.join(
-                    output_dir, f"{prefix}_interactive.html"
-                )
+                interactive_path = safe_join(output_dir, f"{prefix}_interactive.html")
                 self.interactive_visualizer.generate_interactive_html(
                     bands_a,
                     bands_b,
@@ -2415,11 +2418,34 @@ class VisualizationManager:
 
             # Generate GeoTIFF (4-band: RGB + classification mask)
             if "geotiff" in formats:
-                geotiff_path = os.path.join(output_dir, f"{prefix}_classification.tif")
+                geotiff_path = safe_join(output_dir, f"{prefix}_classification.tif")
                 self.geotiff_exporter.export_classification(
                     classification, metadata, geotiff_path, bands=bands_b
                 )
                 output_files["geotiff"] = geotiff_path
+
+            if include_web_bundle:
+                overlay_rgba = (
+                    self.static_visualizer.emboss_renderer.create_color_coded_overlay(
+                        classification, embossed
+                    )
+                )
+                bundle_outputs = export_web_bundle(
+                    output_dir=output_dir,
+                    output_prefix=prefix,
+                    center_lat=center_lat,
+                    center_lon=center_lon,
+                    classification=classification,
+                    stats=normalized_stats,
+                    metadata=metadata,
+                    generated_files=output_files,
+                    bands_a=bands_a,
+                    bands_b=bands_b,
+                    overlay_rgba=overlay_rgba,
+                )
+                output_files["web_manifest"] = bundle_outputs["manifest_path"]
+                output_files["web_bundle"] = bundle_outputs["bundle_path"]
+                output_files["job_id"] = bundle_outputs["job_id"]
 
             logger.info(f"Generated {len(output_files)} visualization outputs")
             return output_files

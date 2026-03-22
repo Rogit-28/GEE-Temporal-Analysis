@@ -30,6 +30,8 @@ class ImageProcessor:
         """
         self.config = config
         self.cloud_threshold = config.get("cloud_threshold", 20)
+        self.valid_warn_threshold_pct = 40.0
+        self.valid_fail_threshold_pct = 20.0
 
     def _resample_b11_to_10m(
         self, bands: Dict[str, np.ndarray], reference_band: str = "B4"
@@ -202,30 +204,67 @@ class ImageProcessor:
                 f"Cloud coverage - Date A: {cloud_coverage_a:.1f}%, Date B: {cloud_coverage_b:.1f}%"
             )
 
-            # Apply cloud masks to all bands
-            # Note: For change detection, we keep the original data and just track cloud coverage
-            # The cloud mask can be used later to exclude cloudy pixels from analysis if needed
+            # Apply cloud masks to all bands by marking cloudy pixels as NaN for float bands.
+            # For integer bands, use 0 as a fallback but keep explicit valid masks for downstream exclusion.
             bands_a_masked = {}
             bands_b_masked = {}
 
             for band_name, band_array in bands_a.items():
                 if band_name != "QA60":  # Don't mask the QA band itself
-                    # np.where(condition, value_if_true, value_if_false)
-                    # cloud_mask: 1=clear, 0=cloudy
-                    # Keep clear pixels, set cloudy pixels to 0
-                    bands_a_masked[band_name] = np.where(
-                        cloud_mask_a == 1, band_array, 0
-                    )
+                    if np.issubdtype(band_array.dtype, np.floating):
+                        bands_a_masked[band_name] = np.where(
+                            cloud_mask_a == 1, band_array, np.nan
+                        )
+                    else:
+                        bands_a_masked[band_name] = np.where(
+                            cloud_mask_a == 1, band_array, 0
+                        )
                 else:
                     bands_a_masked[band_name] = band_array
 
             for band_name, band_array in bands_b.items():
                 if band_name != "QA60":
-                    bands_b_masked[band_name] = np.where(
-                        cloud_mask_b == 1, band_array, 0
-                    )
+                    if np.issubdtype(band_array.dtype, np.floating):
+                        bands_b_masked[band_name] = np.where(
+                            cloud_mask_b == 1, band_array, np.nan
+                        )
+                    else:
+                        bands_b_masked[band_name] = np.where(
+                            cloud_mask_b == 1, band_array, 0
+                        )
                 else:
                     bands_b_masked[band_name] = band_array
+
+            # Track valid masks for downstream statistics and policy checks
+            valid_mask_a = cloud_mask_a == 1
+            valid_mask_b = cloud_mask_b == 1
+            valid_ratio_a = float(np.mean(valid_mask_a))
+            valid_ratio_b = float(np.mean(valid_mask_b))
+            valid_pct_a = valid_ratio_a * 100.0
+            valid_pct_b = valid_ratio_b * 100.0
+
+            bands_a_masked["VALID_MASK"] = valid_mask_a.astype(np.uint8)
+            bands_b_masked["VALID_MASK"] = valid_mask_b.astype(np.uint8)
+            bands_a_masked["VALID_RATIO"] = np.array(valid_ratio_a, dtype=np.float32)
+            bands_b_masked["VALID_RATIO"] = np.array(valid_ratio_b, dtype=np.float32)
+
+            if (
+                valid_pct_a < self.valid_fail_threshold_pct
+                or valid_pct_b < self.valid_fail_threshold_pct
+            ):
+                raise ImageProcessingError(
+                    f"Insufficient valid pixels after cloud masking: Date A {valid_pct_a:.1f}% / "
+                    f"Date B {valid_pct_b:.1f}% (minimum {self.valid_fail_threshold_pct:.1f}%)"
+                )
+
+            if valid_pct_a < self.valid_warn_threshold_pct:
+                logger.warning(
+                    f"Date A valid pixel coverage low: {valid_pct_a:.1f}% (<{self.valid_warn_threshold_pct:.1f}%)"
+                )
+            if valid_pct_b < self.valid_warn_threshold_pct:
+                logger.warning(
+                    f"Date B valid pixel coverage low: {valid_pct_b:.1f}% (<{self.valid_warn_threshold_pct:.1f}%)"
+                )
 
             # Check if cloud coverage exceeds threshold
             if cloud_coverage_a > self.cloud_threshold:
@@ -242,8 +281,7 @@ class ImageProcessor:
 
         except Exception as e:
             logger.error(f"Cloud masking failed: {e}")
-            # Return original bands if masking fails
-            return bands_a, bands_b
+            raise ImageProcessingError(f"Cloud masking failed: {e}")
 
     def _create_cloud_mask(self, qa60_band: np.ndarray) -> np.ndarray:
         """Create cloud mask from QA60 band.
@@ -379,8 +417,9 @@ class ImageProcessor:
             Normalized brightness difference (0-1)
         """
         try:
-            # Calculate mean brightness for common bands
-            common_bands = set(bands_a.keys()) & set(bands_b.keys())
+            # Calculate mean brightness for shared spectral bands only
+            common_bands = [band for band in bands_a.keys() if band in bands_b]
+            excluded_bands = {"QA60", "VALID_MASK", "VALID_RATIO"}
 
             if not common_bands:
                 return 0.0
@@ -389,18 +428,28 @@ class ImageProcessor:
             brightness_b = []
 
             for band in common_bands:
-                # Exclude QA band from brightness calculation
-                if band != "QA60":
-                    band_a = bands_a[band]
-                    band_b = bands_b[band]
+                if band in excluded_bands:
+                    continue
 
-                    # Calculate mean brightness (excluding zero values)
-                    valid_pixels_a = band_a[band_a > 0]
-                    valid_pixels_b = band_b[band_b > 0]
+                band_a = bands_a[band]
+                band_b = bands_b[band]
 
-                    if len(valid_pixels_a) > 0 and len(valid_pixels_b) > 0:
-                        brightness_a.append(np.mean(valid_pixels_a))
-                        brightness_b.append(np.mean(valid_pixels_b))
+                if not (
+                    isinstance(band_a, np.ndarray)
+                    and isinstance(band_b, np.ndarray)
+                    and band_a.ndim == 2
+                    and band_b.ndim == 2
+                    and band_a.shape == band_b.shape
+                ):
+                    continue
+
+                # Calculate mean brightness (excluding zero values)
+                valid_pixels_a = band_a[band_a > 0]
+                valid_pixels_b = band_b[band_b > 0]
+
+                if len(valid_pixels_a) > 0 and len(valid_pixels_b) > 0:
+                    brightness_a.append(np.mean(valid_pixels_a))
+                    brightness_b.append(np.mean(valid_pixels_b))
 
             if not brightness_a or not brightness_b:
                 return 0.0
@@ -437,22 +486,34 @@ class ImageProcessor:
             bands_a_norm = {}
             bands_b_norm = {}
 
-            common_bands = set(bands_a.keys()) & set(bands_b.keys())
+            common_bands = [band for band in bands_a.keys() if band in bands_b]
+            passthrough_bands = {"QA60", "VALID_MASK", "VALID_RATIO"}
 
             for band in common_bands:
-                if band != "QA60":  # Don't normalize QA band
-                    band_a = bands_a[band]
-                    band_b = bands_b[band]
+                band_a = bands_a[band]
+                band_b = bands_b[band]
 
-                    # Apply histogram matching
-                    band_b_matched = self._match_histogram(band_a, band_b)
-
+                if band in passthrough_bands:
                     bands_a_norm[band] = band_a
-                    bands_b_norm[band] = band_b_matched
-                else:
-                    # Keep QA band as-is
-                    bands_a_norm[band] = bands_a[band]
-                    bands_b_norm[band] = bands_b[band]
+                    bands_b_norm[band] = band_b
+                    continue
+
+                if not (
+                    isinstance(band_a, np.ndarray)
+                    and isinstance(band_b, np.ndarray)
+                    and band_a.ndim == 2
+                    and band_b.ndim == 2
+                    and band_a.shape == band_b.shape
+                ):
+                    bands_a_norm[band] = band_a
+                    bands_b_norm[band] = band_b
+                    continue
+
+                # Apply histogram matching on comparable image bands
+                band_b_matched = self._match_histogram(band_a, band_b)
+
+                bands_a_norm[band] = band_a
+                bands_b_norm[band] = band_b_matched
 
             return bands_a_norm, bands_b_norm
 
@@ -618,6 +679,8 @@ class ImageProcessor:
                 "date_b": metadata_b.get("date", "Unknown"),
                 "cloud_coverage_a": 0,
                 "cloud_coverage_b": 0,
+                "valid_pixel_pct_a": 0.0,
+                "valid_pixel_pct_b": 0.0,
                 "brightness_difference": 0,
                 "processing_successful": True,
                 "warnings": [],
@@ -638,6 +701,15 @@ class ImageProcessor:
                     np.sum(cloud_mask_b == 0) / cloud_mask_b.size
                 ) * 100
 
+            if "VALID_MASK" in bands_a:
+                summary["valid_pixel_pct_a"] = (
+                    float(np.mean(bands_a["VALID_MASK"])) * 100.0
+                )
+            if "VALID_MASK" in bands_b:
+                summary["valid_pixel_pct_b"] = (
+                    float(np.mean(bands_b["VALID_MASK"])) * 100.0
+                )
+
             # Calculate brightness difference
             summary["brightness_difference"] = self._calculate_brightness_difference(
                 bands_a, bands_b
@@ -657,6 +729,14 @@ class ImageProcessor:
             if summary["brightness_difference"] > 0.1:
                 summary["warnings"].append(
                     f"Significant brightness difference ({summary['brightness_difference']:.2%}) detected"
+                )
+            if summary["valid_pixel_pct_a"] < self.valid_warn_threshold_pct:
+                summary["warnings"].append(
+                    f"Date A valid pixel coverage low ({summary['valid_pixel_pct_a']:.1f}%)"
+                )
+            if summary["valid_pixel_pct_b"] < self.valid_warn_threshold_pct:
+                summary["warnings"].append(
+                    f"Date B valid pixel coverage low ({summary['valid_pixel_pct_b']:.1f}%)"
                 )
 
             return summary

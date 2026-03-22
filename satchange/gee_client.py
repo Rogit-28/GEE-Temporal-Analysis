@@ -672,6 +672,7 @@ class GEEClient:
         cloud_threshold: float = 15.0,
         size: int = 150,
         resolution: int = 10,
+        max_window_days: int = 90,
     ) -> Dict[str, Any]:
         """Find alternative dates with good local cloud coverage.
 
@@ -707,6 +708,11 @@ class GEEClient:
             ("±2 months", 60),
             ("±3 months", 90),
         ]
+        search_windows = [
+            (label, days) for label, days in search_windows if days <= max_window_days
+        ]
+        if not search_windows:
+            search_windows = [("±2 weeks", min(14, max_window_days))]
 
         for window_label, days in search_windows:
             start_dt = target_dt - timedelta(days=days)
@@ -729,7 +735,7 @@ class GEEClient:
                 continue
 
             # Get all images and compute local cloud for each
-            images_info = collection.getInfo()
+            images_info = collection.limit(30).getInfo()
             alternatives = []
 
             for feature in images_info.get("features", []):
@@ -749,9 +755,7 @@ class GEEClient:
                 # Compute local cloud coverage
                 image = ee.Image(image_id)
                 scl = image.select("SCL")
-                cloud_mask = (
-                    scl.eq(3).Or(scl.eq(8)).Or(scl.eq(9)).Or(scl.eq(10))
-                )
+                cloud_mask = scl.eq(3).Or(scl.eq(8)).Or(scl.eq(9)).Or(scl.eq(10))
 
                 stats = cloud_mask.reduceRegion(
                     reducer=ee.Reducer.mean(), geometry=region, scale=20, maxPixels=1e6
@@ -793,15 +797,15 @@ class GEEClient:
                     "alternatives": alternatives[:10],  # Return top 10
                 }
 
-        # No good alternatives found within ±3 months
+        # No good alternatives found within configured window
         # Return best available anyway with threshold_met=False
         logger.warning(
-            f"No alternatives below {cloud_threshold}% found within ±3 months"
+            f"No alternatives below {cloud_threshold}% found within ±{max_window_days} days"
         )
 
         # Do a final search to get the best available
-        start_dt = target_dt - timedelta(days=90)
-        end_dt = target_dt + timedelta(days=90)
+        start_dt = target_dt - timedelta(days=max_window_days)
+        end_dt = target_dt + timedelta(days=max_window_days)
 
         collection = (
             ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
@@ -830,9 +834,7 @@ class GEEClient:
             # Compute local cloud
             image = ee.Image(image_id)
             scl = image.select("SCL")
-            cloud_mask = (
-                scl.eq(3).Or(scl.eq(8)).Or(scl.eq(9)).Or(scl.eq(10))
-            )
+            cloud_mask = scl.eq(3).Or(scl.eq(8)).Or(scl.eq(9)).Or(scl.eq(10))
 
             stats = cloud_mask.reduceRegion(
                 reducer=ee.Reducer.mean(), geometry=region, scale=20, maxPixels=1e6
@@ -859,7 +861,7 @@ class GEEClient:
 
         return {
             "target_date": target_date,
-            "search_window": "±3 months (no good alternatives)",
+            "search_window": f"±{max_window_days} days (no good alternatives)",
             "threshold_met": False,
             "alternatives": alternatives,
         }
@@ -1022,15 +1024,13 @@ class GEEClient:
         )
 
         for window_days in expanded_windows:
-            # find_alternative_dates uses its own incremental windows, but we
-            # call it with a cloud threshold of 60% (the most relaxed
-            # single-scene limit we accept) and let it search up to the window.
             alt_result = self.find_alternative_dates(
                 target_date=date,
                 center=center,
                 cloud_threshold=60.0,
                 size=size,
                 resolution=resolution,
+                max_window_days=window_days,
             )
 
             if alt_result["threshold_met"] and alt_result["alternatives"]:

@@ -1,40 +1,34 @@
-# RUN_INSTRUCTIONS.md
+# SatChange Run Instructions
 
-SatChange — Run instructions (setup, demo commands, and troubleshooting)
+Setup, demo execution, validation, and troubleshooting.
 
-Purpose
--------
-This document captures everything needed to get SatChange running locally on Windows (also applicable to macOS/Linux with small path changes). It covers environment setup, CLI installation, example commands (dry-run and real runs), quality checks, caching, and troubleshooting.
+## 1) Prerequisites
 
-Prerequisites
--------------
 - Windows / macOS / Linux
-- Python 3.8+ (recommended)
+- Python 3.8+
 - Git
-- Google Earth Engine access via a service account JSON key (Earth Engine API enabled) and a GCP project id
-- Optional: GDAL/rasterio for GeoTIFF export (Windows users may prefer conda for rasterio/GDAL)
+- Google Earth Engine service-account JSON key + GCP project ID
+- Optional: GDAL/rasterio system dependencies for GeoTIFF export
 
-Security note
--------------
-Do NOT commit service-account JSON files to source control. Keep credentials outside the repository and point to them with `satchange config init` (or `GOOGLE_APPLICATION_CREDENTIALS` where applicable).
+> Security: never commit service-account keys. Keep key files local and git-ignored.
 
-Quick setup (development)
--------------------------
-Open a terminal in the repository root and run (Bash syntax shown):
+## 2) Environment setup (repo root)
 
 ```bash
 git clone https://github.com/Rogit-28/GEE-Temporal-Analysis.git
 cd GEE-Temporal-Analysis
 python -m venv venv
-# Activate venv (Git Bash on Windows)
-source venv/Scripts/activate
-# macOS / Linux: source venv/bin/activate
-# Windows Command Prompt: venv\Scripts\activate.bat
+# PowerShell:
+.\venv\Scripts\Activate.ps1
+# macOS/Linux:
+# source venv/bin/activate
 pip install -r requirements.txt
 pip install -e .
+# For lint/type/test/release checks:
+pip install -r requirements-dev.txt
 ```
 
-Verify the CLI entrypoint:
+Verify CLI entrypoints:
 
 ```bash
 python -m satchange --help
@@ -42,119 +36,139 @@ satchange --help
 satchange --version
 ```
 
-Configuration and authentication
---------------------------------
-Initialize configuration with a service-account key and project id (these flags are required for `config init`):
+## 3) Configure authentication
 
 ```bash
-satchange config init --service-account-key /path/to/your-key.json --project-id your-project-id
+satchange config init --service-account-key /path/to/key.json --project-id your-project-id
 satchange config show
 ```
 
-`config show` prints the loaded configuration (auth state, thresholds, cache settings). The config file is stored at `~/.satchange/config.yaml` by default.
+Behavior notes:
 
-NOTE: If you do not want to authenticate (e.g., to run a dry-run), you can omit `config init` — `--dry-run` runs offline and does not require credentials.
+- Key is copied to `~/.satchange/keys/`.
+- Config is stored at `~/.satchange/config.yaml` by default.
+- Re-run `config init` if managed key is removed or rotated.
 
-Inspecting imagery (preview)
----------------------------
-Preview available Sentinel-2 scenes for an AOI and date-range:
+## 4) Run core CLI workflows
 
-```bash
-satchange inspect --center "13.0827,80.2707" --size 100 --date-range "2022-01-01:2024-12-31" --cloud-threshold 20
-```
-
-- `--center` accepts `lat,lon` (string)
-- `--size` is pixel dimensions (NxN), default 100
-- `--date-range` uses `start:end`
-- `--cloud-threshold` is scene-level threshold (percent)
-
-Dry-run (plan without network calls)
------------------------------------
-Use `--dry-run` to validate inputs and print the planned analysis without contacting GEE or downloading imagery. This works without authentication.
+### A) Dry-run (no network, no downloads)
 
 ```bash
 satchange analyze --center "13.0827,80.2707" --size 100 --date-a "2022-02-04" --date-b "2024-10-26" --change-type all --output ./results --dry-run
 ```
 
 Expected behavior:
-- Validates coordinates, dates, thresholds, and output path locally
-- Prints the analysis plan and the output filename prefix
-- Exits without network calls or downloads
 
-Run a full analysis (credentialed)
-----------------------------------
-Requires `satchange config init` (service account + project). Small AOI example:
+- Local validation only
+- Prints planned output prefix
+- Exits without imagery download
+
+### B) Inspect imagery catalog
+
+```bash
+satchange inspect --center "13.0827,80.2707" --size 100 --date-range "2022-01-01:2024-12-31" --cloud-threshold 20
+```
+
+### C) Analyze changes
 
 ```bash
 satchange analyze --center "13.0827,80.2707" --size 100 --date-a "2022-02-04" --date-b "2024-10-26" --change-type all --cloud-threshold 20 --output ./results --name chennai --non-interactive
 ```
 
-Flags of interest:
-- `--cloud-threshold` (local cloud acceptance %, default 15)
-- `--change-type` (`vegetation`, `water`, `urban`, `all`)
-- `--threshold` (change-detection threshold, default 0.2)
-- `--non-interactive` auto-selects alternatives (no prompts)
-
-Outputs (written under `--output` with prefix `{name}_{date_a}_{date_b}`):
-- `{prefix}_bands_a.npy` — bands for date A
-- `{prefix}_bands_b.npy` — bands for date B
-- `{prefix}_classification.npy` — classification map
-- `{prefix}_change_stats.json` — change statistics
-- `{prefix}_metadata.json` — metadata
-- `{prefix}_visualization.png` — static PNG
-- `{prefix}_interactive.html` — offline interactive HTML viewer
-- `{prefix}_classification.tif` — GeoTIFF (requires rasterio)
-
-Export visualizations from an existing results directory
-------------------------------------------------------
-Generate the static PNG, interactive HTML, and GeoTIFFs from a completed analysis:
+### D) Export visualization outputs
 
 ```bash
-satchange export --result ./results --format all --emboss-intensity 1.0
+satchange export --result ./results --format all
+# Optional legacy compatibility output:
+satchange export --result ./results --format all --include-legacy-html
 ```
 
-Cache management
-----------------
+## 5) Validate web viewer
+
 ```bash
-satchange cache status    # show cache stats
-satchange cache clear     # delete all cached tiles (prompts to confirm)
-satchange cache cleanup   # remove entries older than 30 days
+cd web
+npm install
+# PowerShell:
+$env:SATCHANGE_RESULTS_DIR = "C:\path\to\results"
+npm run build
+npm run dev:reset
 ```
 
-Quality checks:
+Open:
+
+```text
+http://localhost:3000/jobs/<job_id>
+http://localhost:3000/api/jobs/<job_id>
+```
+
+If styles look broken, clear stale cache and restart:
+
+```bash
+cd web
+npm run dev:reset
+```
+
+If CLI prints `web_viewer: not started (...)`, run the manual command shown in CLI output.
+
+## 6) Output artifacts
+
+For prefix `{name}_{date_a}_{date_b}`:
+
+- `{prefix}_bands_a.npz`, `{prefix}_bands_b.npz`
+- `{prefix}_classification.npy`
+- `{prefix}_change_stats.json`
+- `{prefix}_metadata.json`
+- `{prefix}_visualization.png`
+- `{prefix}_classification.tif`
+- `{prefix}_job.json`
+- `{prefix}_web_bundle/manifest.json`
+- `{prefix}_interactive.html` (only with `--include-legacy-html`)
+
+## 7) Quality and release verification
+
+Run from repository root:
 
 ```bash
 black --check satchange examples
 flake8 satchange examples
 mypy satchange
+pytest -q
+cd web && npm run build
 ```
 
-Notes about optional/native dependencies
----------------------------------------
-- GeoTIFF export uses `rasterio` and may require GDAL system libraries on Windows. If GeoTIFF export fails, install rasterio via conda or use a system wheel appropriate for your platform.
+Latest local verified baseline for this repo:
 
-Integration examples and artifacts
----------------------------------
-- Example scripts are under `examples/` (e.g., `integration_example.py`).
-- Analysis outputs are generated into your chosen output directory (for example `./results`) and are intentionally not tracked in git.
+- Lint/type/tests: pass (`10 passed`)
+- Web production build: pass
+- CLI entrypoints: pass
 
-Troubleshooting
----------------
-- AuthenticationError: verify the service-account key file, project id, and ensure Earth Engine API is enabled for that service account.
-- NoImageryError: try a wider date range, increase `--cloud-threshold`, or run `inspect` to preview scenes.
-- Download failed / network errors: check connectivity and firewall settings. Ensure at least ~50 MB free in output path.
-- GeoTIFF export errors: ensure rasterio/GDAL are installed; on Windows prefer conda-forge packages.
+## 8) Troubleshooting
 
-Additional recommendations
--------------------------
-- Keep service-account keys out of the working tree. If a key was added locally, remove it or move it to a secure path and re-run `satchange config init`.
-- Use `--dry-run` to validate parameters before performing credentialed runs.
-- For reproducibility, pin dependency versions in `requirements.txt` or use a lock file.
+- **Not authenticated**: run `satchange config init ...`.
+- **No imagery found**: widen date range or raise cloud threshold.
+- **Insufficient disk space**: free space in output directory.
+- **GeoTIFF export failures**: install compatible rasterio/GDAL for your platform.
+- **Web data not loading**: verify `SATCHANGE_RESULTS_DIR` points to the results directory with job manifest files.
 
-References
-----------
-- README.md (project overview and quick start)
-- API_REFERENCE.md (detailed CLI reference)
-- .github/copilot-instructions.md (developer guidance)
+## 9) Security and hygiene checklist
 
-If more specific example commands (e.g., a sample AOI GeoJSON or an integration notebook) are desired, say which AOI or workflow to include and this file can be extended with ready-to-run commands and sample data paths.
+- Keep keys out of source control.
+- Prefer managed key path under `~/.satchange/keys/`.
+- Use `--dry-run` before expensive/credentialed runs.
+- Do not rely on legacy pickled `*_bands_*.npy` for export; use `.npz` artifacts.
+
+## 10) Release checklist
+
+- [ ] `README.md`, `RUN_INSTRUCTIONS.md`, and `API_REFERENCE.md` are consistent
+- [ ] Demo commands and output snippets are verified
+- [ ] Internal doc links resolve
+- [ ] `black`, `flake8`, `mypy`, and `pytest` pass
+- [ ] Web build succeeds (`cd web && npm run build`)
+- [ ] No credentials or secrets present in tracked files
+- [ ] Release notes summarize user-facing CLI/output changes
+
+## 11) References
+
+- [README.md](README.md)
+- [API_REFERENCE.md](API_REFERENCE.md)
+- [CONTRIBUTING.md](CONTRIBUTING.md)

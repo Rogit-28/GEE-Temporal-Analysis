@@ -10,7 +10,7 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 
 setup(
     name="satchange",
-    version="0.1.0",
+    version="1.0.0a1",
     author="SatChange Team",
     author_email="team@satchange.dev",
     description="A CLI tool for detecting temporal changes in satellite imagery",

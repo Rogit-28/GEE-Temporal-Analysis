@@ -3,11 +3,18 @@
 ## Build, test, and lint commands
 Run commands from the repository root.
 
+## Autopilot mode
+Never consume premium requests autonomously. One pattern I have noticed is that you don't give me final summary when the implementation is done - then consume another premium request before giving me the final summary. Please give me the final summary when the implementation is done, and only consume premium requests when I ask you to.
+
+## /fleet and subagent invokations
+Always use 0x premium requests for /fleet and subagent invocations, example models include raptor-mini and gpt-5 mini. If the subagent is working on a complex write/research/refactor task, you can ask for a premium request to be used for that subagent invocation or proceed with using cheaper models like claude haiku 4.6 or gpt 5.4-mini.
+
 ### Environment and install (effective build step)
 - `python -m venv venv`
 - `.\venv\Scripts\activate`
 - `pip install -r requirements.txt`
 - `pip install -e .`
+- `pip install -r requirements-dev.txt`
 - `python -m satchange --help` (sanity check for CLI entrypoint)
 
 ### Lint and type checks

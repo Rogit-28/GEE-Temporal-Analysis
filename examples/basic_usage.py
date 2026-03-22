@@ -21,9 +21,8 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from satchange.config import Config
-from satchange.cache import CacheManager
 from satchange.change_detector import ChangeDetector, ChangeDetectionError
-from satchange.visualization import VisualizationManager, VisualizationError
+from satchange.visualization import VisualizationError, VisualizationManager
 
 
 def create_mock_data():
@@ -77,7 +76,7 @@ cache_settings:
   max_size_gb: 1.0
   eviction_policy: "lru"
 
-analysis_parameters:
+analysis:
   default_cloud_threshold: 20
   default_pixel_size: 100
   change_threshold: 0.2
@@ -114,19 +113,19 @@ def demonstrate_configuration():
 
     try:
         # Get configuration values
-        cloud_threshold = config.get("analysis_parameters.default_cloud_threshold")
-        cache_size = config.get("cache_settings.max_size_gb")
+        cloud_threshold = config.get("cloud_threshold")
+        cache_size = config.get("cache.max_size_gb")
 
         print(f"Cloud threshold: {cloud_threshold}")
         print(f"Cache size: {cache_size} GB")
 
         # Set new values
-        config.set("analysis_parameters.change_threshold", 0.25)
-        config.set("cache_settings.max_size_gb", 2.0)
+        config.set("analysis.change_threshold", 0.25)
+        config.set("cache.max_size_gb", 2.0)
 
         # Get updated values
-        new_threshold = config.get("analysis_parameters.change_threshold")
-        new_cache_size = config.get("cache_settings.max_size_gb")
+        new_threshold = config.get("analysis.change_threshold")
+        new_cache_size = config.get("cache.max_size_gb")
 
         print(f"New change threshold: {new_threshold}")
         print(f"New cache size: {new_cache_size} GB")
@@ -134,40 +133,6 @@ def demonstrate_configuration():
         # Validate configuration
         config.validate()
         print("Configuration validation passed!")
-
-    finally:
-        # Clean up
-        if os.path.exists(config_file):
-            os.unlink(config_file)
-
-
-def demonstrate_cache():
-    """Demonstrate caching functionality."""
-    print("\n" + "=" * 50)
-    print("Caching System Demo")
-    print("=" * 50)
-
-    config, config_file = setup_configuration()
-
-    try:
-        # Initialize cache manager
-        cache_manager = CacheManager(config)
-
-        # Store mock data
-        mock_data = {"test": "data", "numbers": [1, 2, 3]}
-        cache_manager.set("test_key", mock_data)
-
-        # Retrieve data
-        retrieved_data = cache_manager.get("test_key")
-        print(f"Retrieved data: {retrieved_data}")
-
-        # Get cache statistics
-        stats = cache_manager.get_cache_stats()
-        print(f"Cache stats: {stats}")
-
-        # Clear cache
-        cache_manager.clear_cache()
-        print("Cache cleared!")
 
     finally:
         # Clean up
@@ -234,6 +199,7 @@ def demonstrate_visualization():
     bands_a, bands_b, metadata_a, metadata_b = create_mock_data()
 
     try:
+        config, config_file = setup_configuration()
         # Initialize change detector and get results
         detector = ChangeDetector(threshold=0.2)
         all_changes = detector.detect_all_changes(bands_a, bands_b)
@@ -247,31 +213,27 @@ def demonstrate_visualization():
         with tempfile.TemporaryDirectory() as temp_dir:
             print(f"Using temporary directory: {temp_dir}")
 
-            # Generate mock outputs (without actual image processing)
-            print("Generating mock visualization outputs...")
-
-            # Note: In a real scenario, these would generate actual files
-            # For this demo, we'll just show what would be generated
-
-            output_files = {
-                "static_png": os.path.join(temp_dir, "visualization.png"),
-                "interactive_html": os.path.join(temp_dir, "visualization.html"),
-                "geotiff": os.path.join(temp_dir, "classification.tif"),
-                "stats_json": os.path.join(temp_dir, "statistics.json"),
-            }
-
-            print("Would generate the following files:")
-            for file_type, file_path in output_files.items():
-                print(f"  {file_type}: {file_path}")
-
-            # Apply emboss effect (mock)
-            change_mask = classification > 0
-            embossed = viz_manager.apply_emboss_effect(change_mask, intensity=1.0)
-            print(f"Embossed mask shape: {embossed.shape}")
-            print(f"Embossed mask range: {embossed.min()} - {embossed.max()}")
+            print("Generating visualization output...")
+            output_files = viz_manager.generate_all_outputs(
+                bands_a=bands_a,
+                bands_b=bands_b,
+                classification=classification,
+                stats=detector.compute_change_statistics(classification),
+                metadata=metadata_a,
+                center_lat=13.0827,
+                center_lon=80.2707,
+                output_dir=temp_dir,
+                formats=["static"],
+                output_prefix="demo",
+                include_web_bundle=False,
+            )
+            print(f"Generated output files: {output_files}")
 
     except VisualizationError as e:
         print(f"Visualization error: {e}")
+    finally:
+        if "config_file" in locals() and os.path.exists(config_file):
+            os.unlink(config_file)
 
 
 def demonstrate_error_handling():
@@ -285,7 +247,7 @@ def demonstrate_error_handling():
         config, config_file = setup_configuration()
 
         # Set invalid cloud threshold
-        config.set("analysis_parameters.default_cloud_threshold", 200)  # Too high
+        config.set("cloud_threshold", 200)  # Too high
 
         # This should raise a ConfigError
         config.validate()
@@ -293,10 +255,10 @@ def demonstrate_error_handling():
     except Exception as e:
         print(f"Expected error caught: {type(e).__name__}: {e}")
 
-    try:
-        # Try to create change detector with invalid threshold
-        ChangeDetector(threshold=1.5)  # Invalid threshold
+    from satchange.utils import validate_threshold
 
+    try:
+        validate_threshold(1.5, 0.1, 1.0)
     except Exception as e:
         print(f"Expected error caught: {type(e).__name__}: {e}")
 
@@ -314,7 +276,6 @@ def main():
     try:
         # Run demonstrations
         demonstrate_configuration()
-        demonstrate_cache()
         demonstrate_change_detection()
         demonstrate_visualization()
         demonstrate_error_handling()

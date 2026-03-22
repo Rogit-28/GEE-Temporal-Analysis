@@ -1,172 +1,267 @@
 # SatChange
 
-A Python CLI tool for detecting temporal changes in satellite imagery using Google Earth Engine (Sentinel-2). Analyzes two dates over a geographic area, validates local cloud coverage, and produces change maps with statistics.
+![Python >=3.8](https://img.shields.io/badge/python-%3E%3D3.8-blue)
+![Version 1.0.0a1](https://img.shields.io/badge/version-1.0.0a1-informational)
+![Web Viewer Next.js 14](https://img.shields.io/badge/web_viewer-Next.js_14-black)
+![License MIT](https://img.shields.io/badge/license-MIT-green)
 
-## Features
+SatChange is a Python CLI that compares how a place changed between two dates using Sentinel-2 imagery from Google Earth Engine. It turns raw satellite bands into practical outputs you can share: a static change map, a GeoTIFF, summary statistics, and a local web viewer URL with map layers.
 
-- **Spectral change detection** using NDVI (vegetation), NDWI (water), and NDBI (urban)
-- **Multiple output formats** — static PNG, interactive HTML with Leaflet, GeoTIFF
-- **Local cloud coverage validation** over your specific AOI (not just scene-level metadata)
-- **Graduated cloud fallback** — threshold relaxation, temporal window expansion, median compositing
-- **Disk-based LRU cache** to avoid redundant GEE downloads
-- **Dry-run mode** to preview analysis without downloading imagery
-- **Rich progress indicators** with graceful fallback
+If you track urban growth, vegetation loss, or water change, SatChange gives you a reproducible workflow with AOI-local cloud checks, fallback date recovery, and cached downloads to reduce repeated work.
 
-## Installation
+![SatChange demo change map](docs/assets/demo-change-map.png)
+
+## Table of Contents
+
+- [Why SatChange](#why-satchange)
+- [What you get](#what-you-get)
+- [Quick start](#quick-start)
+- [Demo artifacts (verified)](#demo-artifacts-verified)
+- [Outputs](#outputs)
+- [Web viewer flow](#web-viewer-flow)
+- [Quality checks](#quality-checks)
+- [Packaging notes](#packaging-notes)
+- [Security notes](#security-notes)
+- [FAQ](#faq)
+- [Documentation map](#documentation-map)
+- [Contributing](#contributing)
+- [License](#license)
+
+## Why SatChange
+
+Satellite images are useful, but comparing dates manually is slow and hard to reproduce. SatChange automates that process for a target area of interest (AOI), then packages the result in both analyst-friendly and stakeholder-friendly forms.
+
+### Problem it solves
+
+- Picking usable scenes is difficult when cloud cover varies by location.
+- Raw imagery alone does not explain what changed.
+- Sharing results across technical and non-technical teams is often manual.
+
+### How SatChange solves it
+
+- Uses **AOI-local cloud quality** checks (not scene metadata alone).
+- Applies **fallback strategies** when requested dates are too cloudy.
+- Produces **versionable artifacts** (`.npz`, `.npy`, `.json`, `.png`, `.tif`) plus a **JobID manifest** for the web viewer.
+
+## What you get
+
+- Spectral change detection with NDVI (vegetation), NDWI (water), and NDBI (urban)
+- Stable change classes (`0..7`) across processing and visualization
+- Disk LRU cache to avoid redundant downloads
+- Dry-run mode for safe validation without network calls
+- Web-first output (`job_id`, `manifest`, `/jobs/<job_id>` URL hint)
+- Optional legacy interactive HTML export for compatibility
+
+## Quick start
+
+### 1) Install
 
 ```bash
 git clone https://github.com/Rogit-28/GEE-Temporal-Analysis.git
 cd GEE-Temporal-Analysis
 python -m venv venv
-./venv/Scripts/activate          # Windows
-# source ./venv/bin/activate     # macOS/Linux
+# Windows PowerShell:
+.\venv\Scripts\Activate.ps1
+# macOS/Linux:
+# source venv/bin/activate
 pip install -r requirements.txt
 pip install -e .
+# Maintainer/QA tooling (lint, type-check, tests):
+pip install -r requirements-dev.txt
 ```
 
-**Prerequisites**: Python 3.8+, a GEE service account with Earth Engine API enabled.
-
-## Quick Start
-
-### 1) Configure GEE Access
+### 2) Verify CLI
 
 ```bash
-satchange config init --service-account-key /path/to/key.json --project-id your-project
+python -m satchange --help
+satchange --help
+satchange --version
+```
+
+### 3) Configure Earth Engine
+
+```bash
+satchange config init --service-account-key /path/to/key.json --project-id your-project-id
 satchange config show
 ```
 
-### 2) Inspect Available Imagery
+`config init` copies your key to `~/.satchange/keys/` and stores that managed path in `~/.satchange/config.yaml`.
+
+### 4) Dry-run first (no network calls)
 
 ```bash
-satchange inspect --center "13.0827,80.2707" --size 100 --date-range "2020-01-01:2024-12-31"
+satchange analyze --center "13.0827,80.2707" --size 100 --date-a "2022-02-04" --date-b "2024-10-26" --change-type all --output ./results --dry-run
 ```
 
-### 3) Run Analysis
+### 5) Run analysis and export
 
 ```bash
-satchange analyze \
-  --center "13.0827,80.2707" \
-  --size 100 \
-  --date-a "2022-02-04" \
-  --date-b "2024-10-26" \
-  --change-type water \
-  --output ./results
-```
-
-### 4) Export Visualizations
-
-```bash
+satchange analyze --center "13.0827,80.2707" --size 100 --date-a "2022-02-04" --date-b "2024-10-26" --change-type all --output ./results --name chennai --non-interactive
 satchange export --result ./results --format all
 ```
 
-### 5) Manage Cache
+## Demo artifacts (verified)
+
+The following demo evidence was generated from this repository and stored in `docs/assets/`.
+
+### A) Dry-run output (happy path)
+
+Command:
 
 ```bash
-satchange cache status          # Show cache statistics
-satchange cache clear           # Delete all cached tiles
-satchange cache cleanup         # Remove entries older than 30 days
+satchange analyze --center "13.0827,80.2707" --size 100 --date-a "2022-02-04" --date-b "2024-10-26" --change-type all --output ./results --dry-run
 ```
 
-## Usage Examples
+Output excerpt (`docs/assets/demo-dry-run-output.txt`):
 
-### Dry Run (preview without downloading)
+```text
+[DRY RUN] Local validation complete.
+  Cloud checks skipped (no network calls in dry-run mode).
+  Planned output prefix: 13.0827_80.2707_2022-02-04_2024-10-26
+
+[DRY RUN] Would execute the following:
+  Download images for dates: 2022-02-04, 2024-10-26
+  Area: 100x100 pixels at (13.0827, 80.2707)
+```
+
+### B) Edge case: inspect without auth
+
+Command (explicit empty config):
 
 ```bash
-satchange analyze \
-  --center "13.0827,80.2707" \
-  --size 100 \
-  --date-a "2022-02-04" \
-  --date-b "2024-10-26" \
-  --change-type all \
-  --output ./results \
-  --dry-run
+satchange --config-file <empty-config.yaml> inspect --center "13.0827,80.2707" --size 100 --date-range "2022-01-01:2022-12-31"
 ```
 
-Validates local CLI inputs and reports what *would* happen without downloading imagery or making network calls.
+Output (`docs/assets/demo-missing-auth-output.txt`):
 
-### Urban Change Detection
+```text
+[ERROR] Not authenticated with Google Earth Engine
+Run 'satchange config init' first
+```
+
+### C) Export + web manifest generation
+
+Command:
 
 ```bash
-satchange analyze \
-  --center "13.0827,80.2707" \
-  --size 100 \
-  --date-a "2020-01-15" \
-  --date-b "2024-06-20" \
-  --change-type urban \
-  --output ./results
+satchange export --result ./results --format all --include-legacy-html
 ```
 
-Detects urban development using NDBI from SWIR (B11) and NIR (B8) bands.
+Output excerpt (`docs/assets/demo-export-output.txt`):
 
-## Project Structure
-
-```
-satchange/
-  __init__.py          # Package metadata (v0.1.0)
-  __main__.py          # python -m satchange entry point
-  cli.py               # Click CLI commands (config, analyze, inspect, export, cache)
-  config.py            # YAML configuration manager
-  gee_client.py        # GEE authentication, image query, download, cloud fallback
-  image_processor.py   # Cloud masking, band resampling, radiometric normalization
-  change_detector.py   # NDVI/NDWI/NDBI calculation, change classification
-  visualization.py     # Emboss, colorize, PNG/HTML/GeoTIFF export
-  cache.py             # Disk-based LRU cache with diskcache
-  utils.py             # Coordinate parsing, logging, JSON encoding
-  progress.py          # Rich progress bars with fallback
-examples/
-  basic_usage.py       # Simple analysis workflow
-  advanced_analysis.py # Multi-region, multi-type analysis
-  integration_example.py # End-to-end pipeline
+```text
+[OK] Visualization generation completed!
+Generated files:
+  static: ..._visualization.png
+  geotiff: ..._classification.tif
+  web_manifest: ..._web_bundle\manifest.json
+  job_id: chennai_2022-02-04_2024-10-26-bc28dac04a0d
+  web_url_hint: http://localhost:3000/jobs/chennai_2022-02-04_2024-10-26-bc28dac04a0d
 ```
 
-## Quality Checks
+## Outputs
+
+SatChange writes artifacts with prefix `{name_or_lat_lon}_{date_a}_{date_b}`.
+
+| Artifact | Purpose |
+|---|---|
+| `{prefix}_bands_a.npz`, `{prefix}_bands_b.npz` | Band arrays (pickle-free) |
+| `{prefix}_classification.npy` | Change classification map |
+| `{prefix}_change_stats.json` | Statistics for classes and totals |
+| `{prefix}_metadata.json` | Run metadata and processing summary |
+| `{prefix}_visualization.png` | Static comparison map |
+| `{prefix}_classification.tif` | GeoTIFF for GIS workflows |
+| `{prefix}_job.json` | Job index (`job_id`, manifest path) |
+| `{prefix}_web_bundle/manifest.json` | Web manifest for Next.js job viewer |
+| `{prefix}_interactive.html` | Legacy interactive output (opt-in) |
+
+## Web viewer flow
+
+`analyze` and `export` emit a `job_id` and attempt a best-effort local viewer start.
+
+```bash
+cd web
+npm install
+# PowerShell:
+$env:SATCHANGE_RESULTS_DIR = "C:\path\to\results"
+npm run build
+npm run dev:reset
+```
+
+Open:
+
+```text
+http://localhost:3000/jobs/<job_id>
+http://localhost:3000/api/jobs/<job_id>
+```
+
+If the CLI prints `web_viewer: not started (...)`, run the manual command it prints.
+
+## Quality checks
+
+Validated locally from repository root:
 
 ```bash
 black --check satchange examples
 flake8 satchange examples
 mypy satchange
+pytest -q
+cd web && npm run build
 ```
 
-## Cloud Coverage Fallback
+Latest local baseline in this repo:
 
-When a requested date has high cloud coverage over your AOI, SatChange applies a graduated fallback:
+- `black --check`: pass
+- `flake8`: pass
+- `mypy`: pass
+- `pytest`: pass (`10 passed`)
+- `web build`: pass
 
-1. **Threshold relaxation** — retries with progressively higher tolerance (20% -> 40% -> 60%)
-2. **Temporal window expansion** — searches nearby dates (+/-30 -> +/-60 -> +/-90 days)
-3. **Temporal compositing** — creates a median composite from the clearest scenes in a +/-90-day window
+## Packaging notes
 
-In interactive mode the CLI presents alternatives for selection; in `--non-interactive` mode it auto-selects the best option.
+- Package metadata is defined in `setup.py` (`name=satchange`, `version=1.0.0a1`).
+- CLI entrypoint is `satchange=satchange.cli:main`.
+- Install path verified locally with editable install (`pip install -e .`).
 
-## Error Handling
+## Security notes
 
-| Error | Meaning | Suggestion |
-|-------|---------|------------|
-| `GEE limit reached` | Quota or rate limit exceeded | Wait and retry, or reduce area |
-| `No suitable imagery` | No scenes found for dates/area | Try different dates or higher `--cloud-threshold` |
-| `Download failed` | Network or GEE download error | Check connection, retry |
-| `Insufficient disk space` | Not enough free space for cache | Free up disk space |
+- Never commit service-account keys.
+- `satchange config init` stores a managed local key copy under `~/.satchange/keys/`.
+- Output names are sanitized (`sanitize_output_name`) and file paths are confined (`safe_join`).
+- Legacy pickled band dictionaries (`*_bands_*.npy`) are intentionally unsupported by `export`.
 
-## Notes
+## FAQ
 
-- **GEE credentials**: Requires a service account with Earth Engine API enabled.
-- **Cloud coverage**: Scene-level cloud % can be misleading; SatChange checks **local** cloud coverage over your specific AOI.
-- **B11 resolution**: SWIR band is 20m vs 10m for visible/NIR — SatChange resamples automatically via bicubic interpolation.
-- **Free tier**: Designed to run entirely on GEE's free tier.
+### Does dry-run contact Earth Engine?
 
-## Tech Stack
+No. `--dry-run` validates local inputs and exits before imagery download or change detection.
 
-- **Data source**: Google Earth Engine (Sentinel-2 Surface Reflectance)
-- **Caching**: `diskcache` with LRU eviction
-- **CLI**: `click` with grouped commands
-- **Visualization**: `matplotlib`, `opencv-python-headless`, `jinja2` (Leaflet maps), `rasterio` (GeoTIFF)
-- **Progress**: `rich` (auto-installed, graceful fallback)
-- **Quality tooling**: `black`, `flake8`, `mypy`
+### What if my requested dates are too cloudy?
 
-## Additional Documentation
+SatChange attempts threshold relaxation, temporal window expansion, then median compositing.
 
-- `API_REFERENCE.md` — command and option reference
-- `RUN_INSTRUCTIONS.md` — setup, run commands, troubleshooting
+### Why does `inspect` use scene cloud while `analyze` focuses on local cloud?
+
+`inspect` is a quick catalog preview. `analyze` makes AOI-specific quality decisions using local cloud coverage.
+
+### Is legacy interactive HTML still available?
+
+Yes, but opt-in only via `--include-legacy-html`.
+
+### Where should I start for full command docs?
+
+Use [API_REFERENCE.md](API_REFERENCE.md).
+
+## Documentation map
+
+- [RUN_INSTRUCTIONS.md](RUN_INSTRUCTIONS.md) — setup, commands, troubleshooting, release checklist
+- [API_REFERENCE.md](API_REFERENCE.md) — CLI command and option reference
+- [`examples/`](examples) — programmatic examples (mock/demo-oriented)
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

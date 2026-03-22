@@ -1,0 +1,28 @@
+2026-03-22 11:34:52,577 - satchange.gee_client - INFO - Successfully authenticated with Google Earth Engine
+Starting visualization generation...
+  Result directory: .\results
+  Output format: all
+  Emboss intensity: 1.0
+Loading analysis results...
+  Output prefix: chennai_2022-02-04_2024-10-26
+Generating visualizations...
+2026-03-22 11:34:52,626 - satchange.visualization - INFO - Generating all visualization outputs
+2026-03-22 11:34:52,641 - satchange.visualization - INFO - Generating static comparison plot: C:\Users\rogit\dev\GEE-Temporal-Analysis\results\chennai_2022-02-04_2024-10-26_visualization.png
+2026-03-22 11:34:54,040 - satchange.visualization - INFO - Static plot saved: C:\Users\rogit\dev\GEE-Temporal-Analysis\results\chennai_2022-02-04_2024-10-26_visualization.png
+2026-03-22 11:34:54,054 - satchange.visualization - INFO - Generating interactive HTML: C:\Users\rogit\dev\GEE-Temporal-Analysis\results\chennai_2022-02-04_2024-10-26_interactive.html
+2026-03-22 11:34:54,121 - satchange.visualization - INFO - Interactive HTML saved: C:\Users\rogit\dev\GEE-Temporal-Analysis\results\chennai_2022-02-04_2024-10-26_interactive.html
+2026-03-22 11:34:54,779 - satchange.visualization - INFO - Exporting GeoTIFF: C:\Users\rogit\dev\GEE-Temporal-Analysis\results\chennai_2022-02-04_2024-10-26_classification.tif
+2026-03-22 11:34:54,779 - satchange.visualization - INFO - Exporting 4-band GeoTIFF (RGB + classification mask)
+2026-03-22 11:34:54,863 - satchange.visualization - INFO - GeoTIFF exported successfully: C:\Users\rogit\dev\GEE-Temporal-Analysis\results\chennai_2022-02-04_2024-10-26_classification.tif
+2026-03-22 11:34:54,870 - satchange.visualization - INFO - Generated 6 visualization outputs
+[OK] Visualization generation completed!
+Generated files:
+  static: C:\Users\rogit\dev\GEE-Temporal-Analysis\results\chennai_2022-02-04_2024-10-26_visualization.png
+  interactive: C:\Users\rogit\dev\GEE-Temporal-Analysis\results\chennai_2022-02-04_2024-10-26_interactive.html
+  geotiff: C:\Users\rogit\dev\GEE-Temporal-Analysis\results\chennai_2022-02-04_2024-10-26_classification.tif
+  web_manifest: C:\Users\rogit\dev\GEE-Temporal-Analysis\results\chennai_2022-02-04_2024-10-26_web_bundle\manifest.json
+  web_bundle: C:\Users\rogit\dev\GEE-Temporal-Analysis\results\chennai_2022-02-04_2024-10-26_web_bundle
+  job_id: chennai_2022-02-04_2024-10-26-bc28dac04a0d
+  job_id: chennai_2022-02-04_2024-10-26-bc28dac04a0d
+  web_url_hint: http://localhost:3000/jobs/chennai_2022-02-04_2024-10-26-bc28dac04a0d
+  web_viewer: started

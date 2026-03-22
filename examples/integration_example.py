@@ -27,7 +27,6 @@ from typing import Dict, List, Optional
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from satchange.config import Config
-from satchange.gee_client import GEEClient
 from satchange.cache import CacheManager
 from satchange.image_processor import ImageProcessor
 from satchange.change_detector import ChangeDetector
@@ -40,7 +39,6 @@ class SatChangeWebAPI:
     def __init__(self, config_file: Optional[str] = None):
         """Initialize the web API."""
         self.config = Config(config_file)
-        self.gee_client = GEEClient(self.config)
         self.cache_manager = CacheManager(self.config)
         self.image_processor = ImageProcessor(self.config)
         self.change_detector = ChangeDetector()
@@ -120,14 +118,26 @@ class SatChangeWebAPI:
             )
 
             # Detect changes
-            change_summary = self.change_detector.detect_changes(
+            change_summary = self.change_detector.get_change_summary(
                 processed_a, processed_b, change_type
             )
+            if change_type == "all":
+                classification = change_summary["classification"]
+            else:
+                classification = np.zeros_like(processed_a["B4"], dtype=np.uint8)
+                single = change_summary["change_results"]
+                if change_type == "vegetation":
+                    classification[single["growth_mask"]] = 1
+                    classification[single["loss_mask"]] = 2
+                elif change_type == "water":
+                    classification[single["expansion_mask"]] = 3
+                    classification[single["reduction_mask"]] = 4
+                elif change_type == "urban":
+                    classification[single["development_mask"]] = 5
+                    classification[single["decline_mask"]] = 6
 
             # Get statistics
-            stats = self.change_detector.compute_change_statistics(
-                change_summary["classification"]
-            )
+            stats = self.change_detector.compute_change_statistics(classification)
 
             # Store in database
             analysis_id = self._store_analysis_results(
@@ -146,7 +156,7 @@ class SatChangeWebAPI:
                 analysis_id,
                 processed_a,
                 processed_b,
-                change_summary["classification"],
+                classification,
                 stats,
                 center_lat,
                 center_lon,
@@ -538,9 +548,7 @@ cache_settings:
   max_size_gb: 1.0
   eviction_policy: "lru"
 
-analysis_parameters:
-  default_cloud_threshold: 20
-  default_pixel_size: 100
+analysis:
   change_threshold: 0.2
   emboss_intensity: 1.0
   min_temporal_gap_days: 180

@@ -25,7 +25,6 @@ from typing import Dict, List, Tuple, Optional
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from satchange.config import Config
-from satchange.gee_client import GEEClient
 from satchange.cache import CacheManager
 from satchange.image_processor import ImageProcessor
 from satchange.change_detector import ChangeDetector
@@ -43,16 +42,13 @@ class SatChangeAdvancedAnalyzer:
             config_file: Path to configuration file
         """
         self.config = Config(config_file)
-        self.gee_client = GEEClient(self.config)
         self.cache_manager = CacheManager(self.config)
         self.image_processor = ImageProcessor(self.config)
         self.change_detector = ChangeDetector(
-            threshold=self.config.get("analysis_parameters.change_threshold", 0.2)
+            threshold=self.config.get("analysis.change_threshold", 0.2)
         )
         self.visualization_manager = VisualizationManager(
-            emboss_intensity=self.config.get(
-                "analysis_parameters.emboss_intensity", 1.0
-            )
+            emboss_intensity=self.config.get("analysis.emboss_intensity", 1.0)
         )
 
         # Performance tracking
@@ -95,13 +91,14 @@ class SatChangeAdvancedAnalyzer:
             # Create cache key
             cache_key = f"{location['name']}_{start_date}_{end_date}_{threshold}"
 
-            # Check cache first
-            cached_result = self.cache_manager.get(cache_key)
+            # Example-level cache (independent from internal tile cache)
+            if not hasattr(self, "_results_cache"):
+                self._results_cache = {}
+            cached_result = self._results_cache.get(cache_key)
             if cached_result:
                 self.performance_stats["cache_hits"] += 1
                 print(f"Cache hit for {location['name']}")
                 return cached_result
-
             self.performance_stats["cache_misses"] += 1
 
             # Create mock data for demonstration
@@ -113,14 +110,24 @@ class SatChangeAdvancedAnalyzer:
             )
 
             # Detect changes
-            change_summary = self.change_detector.detect_changes(
+            change_summary = self.change_detector.get_change_summary(
                 processed_a, processed_b, change_type
             )
-
-            # Generate statistics
-            stats = self.change_detector.compute_change_statistics(
-                change_summary["classification"]
-            )
+            if change_type == "all":
+                stats = change_summary["statistics"]
+            else:
+                classification = np.zeros_like(processed_a["B4"], dtype=np.uint8)
+                single = change_summary["change_results"]
+                if change_type == "vegetation":
+                    classification[single["growth_mask"]] = 1
+                    classification[single["loss_mask"]] = 2
+                elif change_type == "water":
+                    classification[single["expansion_mask"]] = 3
+                    classification[single["reduction_mask"]] = 4
+                elif change_type == "urban":
+                    classification[single["development_mask"]] = 5
+                    classification[single["decline_mask"]] = 6
+                stats = self.change_detector.compute_change_statistics(classification)
 
             # Create result
             result = {
@@ -136,7 +143,7 @@ class SatChangeAdvancedAnalyzer:
             }
 
             # Cache result
-            self.cache_manager.set(cache_key, result)
+            self._results_cache[cache_key] = result
 
             self.performance_stats["successful_operations"] += 1
             print(
@@ -297,6 +304,8 @@ class SatChangeAdvancedAnalyzer:
 
     def clear_cache(self):
         """Clear the cache."""
+        if hasattr(self, "_results_cache"):
+            self._results_cache.clear()
         self.cache_manager.clear_cache()
         print("Cache cleared")
 
@@ -401,9 +410,7 @@ cache_settings:
   max_size_gb: 2.0
   eviction_policy: "lru"
 
-analysis_parameters:
-  default_cloud_threshold: 20
-  default_pixel_size: 100
+analysis:
   change_threshold: 0.2
   emboss_intensity: 1.0
   min_temporal_gap_days: 180

@@ -9,8 +9,9 @@ import logging
 import sys
 import json
 import numpy as np
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Optional
 from datetime import datetime, timedelta
+import os
 import re
 
 logger = logging.getLogger(__name__)
@@ -205,6 +206,39 @@ def validate_threshold(
         )
 
 
+_SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def sanitize_output_name(name: Optional[str]) -> Optional[str]:
+    """Sanitize user-provided output name for filesystem-safe artifact prefixes."""
+    if name is None:
+        return None
+    cleaned = name.strip()
+    if not cleaned:
+        raise ValueError("Name cannot be empty")
+
+    if os.path.sep in cleaned or (os.path.altsep and os.path.altsep in cleaned):
+        raise ValueError("Name must not contain path separators")
+    if cleaned in {".", ".."} or ".." in cleaned:
+        raise ValueError("Name must not contain relative path segments")
+
+    safe = _SAFE_NAME_RE.sub("_", cleaned).strip("._-")
+    if not safe:
+        raise ValueError(
+            "Name contains no valid filename characters (use letters, numbers, dot, underscore, hyphen)"
+        )
+    return safe
+
+
+def safe_join(base_dir: str, *parts: str) -> str:
+    """Join path components and ensure final path stays within base_dir."""
+    base_abs = os.path.abspath(base_dir)
+    candidate = os.path.abspath(os.path.join(base_abs, *parts))
+    if os.path.commonpath([base_abs, candidate]) != base_abs:
+        raise ValueError(f"Unsafe path escape attempt: {candidate}")
+    return candidate
+
+
 def check_disk_space(path: str, required_mb: float = 100.0) -> Dict[str, Any]:
     """Check available disk space at the given path.
 
@@ -233,7 +267,7 @@ def check_disk_space(path: str, required_mb: float = 100.0) -> Dict[str, Any]:
         return {
             "available_mb": -1,
             "required_mb": required_mb,
-            "sufficient": True,  # Assume sufficient if can't check
+            "sufficient": False,
         }
 
 

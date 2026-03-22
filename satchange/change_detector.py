@@ -54,8 +54,8 @@ class SpectralIndexCalculator:
             denominator = nir_band.astype(float) + red_band.astype(float) + 1e-7
 
             ndvi = numerator / denominator
-            # Replace NaN/Inf with 0
-            ndvi = np.where(np.isfinite(ndvi), ndvi, 0.0)
+            # Preserve invalid pixels as NaN for downstream masking.
+            ndvi = np.where(np.isfinite(ndvi), ndvi, np.nan)
 
             # Clip to valid range
             ndvi = np.clip(ndvi, -1, 1)
@@ -84,8 +84,7 @@ class SpectralIndexCalculator:
             denominator = green_band.astype(float) + nir_band.astype(float) + 1e-7
 
             ndwi = numerator / denominator
-            # Replace NaN/Inf with 0
-            ndwi = np.where(np.isfinite(ndwi), ndwi, 0.0)
+            ndwi = np.where(np.isfinite(ndwi), ndwi, np.nan)
             ndwi = np.clip(ndwi, -1, 1)
 
             return ndwi
@@ -114,8 +113,7 @@ class SpectralIndexCalculator:
             denominator = swir_band.astype(float) + nir_band.astype(float) + 1e-7
 
             ndbi = numerator / denominator
-            # Replace NaN/Inf with 0
-            ndbi = np.where(np.isfinite(ndbi), ndbi, 0.0)
+            ndbi = np.where(np.isfinite(ndbi), ndbi, np.nan)
             ndbi = np.clip(ndbi, -1, 1)
 
             return ndbi
@@ -136,6 +134,60 @@ class ChangeDetector:
         """
         self.threshold = threshold
         self.index_calculator = SpectralIndexCalculator()
+
+    @staticmethod
+    def _combined_valid_mask(
+        bands_a: Dict[str, np.ndarray], bands_b: Dict[str, np.ndarray]
+    ) -> np.ndarray:
+        """Build a conservative valid-data mask across shared bands and optional cloud masks."""
+        reference_band = None
+        for candidate in ("B4", "B3", "B8", "B11"):
+            arr = bands_a.get(candidate)
+            if isinstance(arr, np.ndarray) and arr.ndim == 2:
+                reference_band = arr
+                break
+        if reference_band is None:
+            raise ChangeDetectionError(
+                "Could not derive valid-mask shape from 2D spectral bands"
+            )
+        valid = np.ones(reference_band.shape, dtype=bool)
+
+        shared = set(bands_a.keys()) & set(bands_b.keys())
+        for band in shared:
+            if band in {"QA60", "VALID_MASK", "VALID_RATIO"}:
+                continue
+            a = bands_a[band]
+            b = bands_b[band]
+            if not (
+                isinstance(a, np.ndarray)
+                and isinstance(b, np.ndarray)
+                and a.ndim == 2
+                and b.ndim == 2
+            ):
+                continue
+            valid &= np.isfinite(a) & np.isfinite(b)
+
+        if "VALID_MASK" in bands_a:
+            valid_mask_a = bands_a["VALID_MASK"]
+            if (
+                isinstance(valid_mask_a, np.ndarray)
+                and valid_mask_a.ndim == 2
+                and valid_mask_a.shape == valid.shape
+            ):
+                valid &= valid_mask_a.astype(bool)
+        if "VALID_MASK" in bands_b:
+            valid_mask_b = bands_b["VALID_MASK"]
+            if (
+                isinstance(valid_mask_b, np.ndarray)
+                and valid_mask_b.ndim == 2
+                and valid_mask_b.shape == valid.shape
+            ):
+                valid &= valid_mask_b.astype(bool)
+        if valid.shape != reference_band.shape:
+            raise ChangeDetectionError(
+                f"Valid mask shape mismatch: expected {reference_band.shape}, got {valid.shape}"
+            )
+        return valid
 
     def detect_vegetation_change(
         self, bands_a: Dict[str, np.ndarray], bands_b: Dict[str, np.ndarray]
@@ -161,17 +213,18 @@ class ChangeDetector:
             # Calculate NDVI for both dates
             ndvi_a = self.index_calculator.calculate_ndvi(bands_a["B4"], bands_a["B8"])
             ndvi_b = self.index_calculator.calculate_ndvi(bands_b["B4"], bands_b["B8"])
+            valid_mask = self._combined_valid_mask(bands_a, bands_b)
 
             # Compute difference
             delta = ndvi_b - ndvi_a
 
             # Generate masks
-            change_mask = np.abs(delta) > self.threshold
-            growth_mask = delta > self.threshold  # Positive change = vegetation growth
-            loss_mask = delta < -self.threshold  # Negative change = vegetation loss
+            change_mask = (np.abs(delta) > self.threshold) & valid_mask
+            growth_mask = (delta > self.threshold) & valid_mask
+            loss_mask = (delta < -self.threshold) & valid_mask
 
             # Calculate change magnitude
-            magnitude = np.abs(delta)
+            magnitude = np.where(valid_mask, np.abs(delta), 0.0)
 
             return {
                 "ndvi_a": ndvi_a,
@@ -212,17 +265,18 @@ class ChangeDetector:
             # Calculate NDWI for both dates
             ndwi_a = self.index_calculator.calculate_ndwi(bands_a["B3"], bands_a["B8"])
             ndwi_b = self.index_calculator.calculate_ndwi(bands_b["B3"], bands_b["B8"])
+            valid_mask = self._combined_valid_mask(bands_a, bands_b)
 
             # Compute difference
             delta = ndwi_b - ndwi_a
 
             # Generate masks
-            change_mask = np.abs(delta) > self.threshold
-            expansion_mask = delta > self.threshold  # Water expansion/flooding
-            reduction_mask = delta < -self.threshold  # Drought/water loss
+            change_mask = (np.abs(delta) > self.threshold) & valid_mask
+            expansion_mask = (delta > self.threshold) & valid_mask
+            reduction_mask = (delta < -self.threshold) & valid_mask
 
             # Calculate change magnitude
-            magnitude = np.abs(delta)
+            magnitude = np.where(valid_mask, np.abs(delta), 0.0)
 
             return {
                 "ndwi_a": ndwi_a,
@@ -267,17 +321,18 @@ class ChangeDetector:
             # Calculate NDBI for both dates using B11 (SWIR) and B8 (NIR)
             ndbi_a = self.index_calculator.calculate_ndbi(bands_a["B11"], bands_a["B8"])
             ndbi_b = self.index_calculator.calculate_ndbi(bands_b["B11"], bands_b["B8"])
+            valid_mask = self._combined_valid_mask(bands_a, bands_b)
 
             # Compute difference
             delta = ndbi_b - ndbi_a
 
             # Generate masks
-            change_mask = np.abs(delta) > self.threshold
-            development_mask = delta > self.threshold  # Urban development
-            decline_mask = delta < -self.threshold  # Urban decline
+            change_mask = (np.abs(delta) > self.threshold) & valid_mask
+            development_mask = (delta > self.threshold) & valid_mask
+            decline_mask = (delta < -self.threshold) & valid_mask
 
             # Calculate change magnitude
-            magnitude = np.abs(delta)
+            magnitude = np.where(valid_mask, np.abs(delta), 0.0)
 
             return {
                 "ndbi_a": ndbi_a,
@@ -431,11 +486,15 @@ class ChangeDetector:
             }
 
             if total_pixels == 0:
-                zero_stats = {
+                zero_stats: Dict[str, Any] = {
                     class_name: {"pixels": 0, "percent": 0.0, "area_km2": 0.0}
                     for class_name in class_names.values()
                 }
-                zero_stats["total_change"] = {"pixels": 0, "percent": 0.0, "area_km2": 0.0}
+                zero_stats["total_change"] = {
+                    "pixels": 0,
+                    "percent": 0.0,
+                    "area_km2": 0.0,
+                }
                 zero_stats["change_types"] = {
                     "vegetation": {"pixels": 0, "percent": 0.0, "area_km2": 0.0},
                     "water": {"pixels": 0, "percent": 0.0, "area_km2": 0.0},
@@ -443,7 +502,7 @@ class ChangeDetector:
                 }
                 return zero_stats
 
-            stats = {}
+            stats: Dict[str, Any] = {}
             for class_id, class_name in class_names.items():
                 count = np.sum(classification == class_id)
                 percent = (count / total_pixels) * 100

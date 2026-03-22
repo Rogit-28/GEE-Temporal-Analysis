@@ -7,6 +7,7 @@ for the SatChange CLI tool.
 
 import copy
 import os
+import shutil
 import yaml
 from typing import Dict, Any, Optional
 from pathlib import Path
@@ -61,6 +62,15 @@ class Config:
         config_dir = home_dir / ".satchange"
         config_dir.mkdir(exist_ok=True)
         return str(config_dir / "config.yaml")
+
+    def _get_managed_key_path(self, source_key_path: str, project_id: str) -> str:
+        """Get managed key path under ~/.satchange/keys for persistent auth."""
+        home_dir = Path.home()
+        keys_dir = home_dir / ".satchange" / "keys"
+        keys_dir.mkdir(parents=True, exist_ok=True)
+        source_name = Path(source_key_path).stem
+        managed_name = f"{project_id}_{source_name}.json"
+        return str(keys_dir / managed_name)
 
     def load(self) -> None:
         """Load configuration from file."""
@@ -190,8 +200,46 @@ class Config:
             if not service_account_email:
                 raise ConfigError("Invalid service account key: missing client_email")
 
+            # Persist a managed copy outside repo to survive working tree cleanup.
+            managed_key_path = self._get_managed_key_path(
+                service_account_key, project_id
+            )
+            shutil.copy2(service_account_key, managed_key_path)
+
+            # Restrict managed key permissions.
+            import platform
+
+            if platform.system() != "Windows":
+                try:
+                    os.chmod(managed_key_path, 0o600)
+                except OSError:
+                    logger.warning(
+                        "Could not set secure permissions on managed key file"
+                    )
+            else:
+                try:
+                    import subprocess
+
+                    username = os.environ.get("USERNAME", os.environ.get("USER", ""))
+                    if username:
+                        subprocess.run(
+                            [
+                                "icacls",
+                                managed_key_path,
+                                "/inheritance:r",
+                                "/grant:r",
+                                f"{username}:(R,W)",
+                            ],
+                            capture_output=True,
+                            check=False,
+                        )
+                except Exception:
+                    logger.warning(
+                        "Could not set secure permissions on managed key file (Windows)"
+                    )
+
             # Set authentication configuration
-            self.set("service_account_key", service_account_key)
+            self.set("service_account_key", managed_key_path)
             self.set("project_id", project_id)
             self.set("service_account_email", service_account_email)
 

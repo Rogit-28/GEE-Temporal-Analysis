@@ -7,10 +7,17 @@ This module provides the main entry point and command definitions for the SatCha
 import click
 import json
 import numpy as np
-from typing import Optional
+from typing import Optional, Tuple, Dict
 import os
+import socket
+import subprocess
 import sys
+import time
+import zipfile
 from datetime import datetime
+from io import BytesIO
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 from .config import Config
 from .gee_client import (
@@ -31,6 +38,8 @@ from .utils import (
     parse_coordinates,
     validate_cloud_threshold,
     NumpyJSONEncoder,
+    sanitize_output_name,
+    safe_join,
 )
 from .progress import spinner, progress_bar
 
@@ -49,11 +58,213 @@ def generate_output_prefix(
 
     Format: {location_name}_{start_date}_{end_date}
     """
-    location_name = name if name else format_location_name(lat, lon)
+    location_name = (
+        sanitize_output_name(name) if name else format_location_name(lat, lon)
+    )
     # Ensure dates are in YYYY-MM-DD format (remove any time component)
     start = start_date.split("T")[0] if "T" in start_date else start_date
     end = end_date.split("T")[0] if "T" in end_date else end_date
     return f"{location_name}_{start}_{end}"
+
+
+def _save_band_arrays_npz(path: str, bands: Dict[str, np.ndarray]) -> None:
+    """Persist band dictionary to NPZ in a non-pickle format."""
+    with zipfile.ZipFile(path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for band_name, band_array in bands.items():
+            buffer = BytesIO()
+            np.save(buffer, band_array, allow_pickle=False)
+            archive.writestr(f"{band_name}.npy", buffer.getvalue())
+
+
+def _load_band_arrays(path: str) -> Dict[str, np.ndarray]:
+    """Load band dictionary from NPZ (pickle-free)."""
+    if path.endswith(".npz"):
+        with np.load(path, allow_pickle=False) as data:
+            return {k: data[k] for k in data.files}
+    raise ValueError(
+        "Legacy NPY band dictionaries are no longer supported for security reasons. "
+        "Re-run `satchange analyze` to regenerate NPZ artifacts."
+    )
+
+
+def _find_result_file(
+    result_dir: str, output_prefix: Optional[str], suffix: str
+) -> str:
+    """Find current or legacy artifact path for a suffix."""
+    if output_prefix:
+        if suffix in {"bands_a", "bands_b"}:
+            npz_candidate = safe_join(result_dir, f"{output_prefix}_{suffix}.npz")
+            if os.path.exists(npz_candidate):
+                return npz_candidate
+            raise FileNotFoundError(
+                f"Missing {suffix}.npz for prefix {output_prefix}. "
+                "Legacy .npy dict format is unsupported; re-run analyze."
+            )
+        npy_candidate = safe_join(result_dir, f"{output_prefix}_{suffix}.npy")
+        if os.path.exists(npy_candidate):
+            return npy_candidate
+        json_candidate = safe_join(result_dir, f"{output_prefix}_{suffix}.json")
+        if os.path.exists(json_candidate):
+            return json_candidate
+    else:
+        if suffix in {"bands_a", "bands_b"}:
+            npz_candidate = safe_join(result_dir, f"{suffix}.npz")
+            if os.path.exists(npz_candidate):
+                return npz_candidate
+            raise FileNotFoundError(
+                f"Missing {suffix}.npz. Legacy .npy dict format is unsupported; re-run analyze."
+            )
+        npy_candidate = safe_join(result_dir, f"{suffix}.npy")
+        if os.path.exists(npy_candidate):
+            return npy_candidate
+        json_candidate = safe_join(result_dir, f"{suffix}.json")
+        if os.path.exists(json_candidate):
+            return json_candidate
+    raise FileNotFoundError(f"Could not find artifact for suffix: {suffix}")
+
+
+def _validate_local_key_location(service_account_key: Optional[str]) -> None:
+    """Warn if key file sits in repository root despite local-only usage."""
+    if not service_account_key:
+        return
+    try:
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+        key_abs = os.path.abspath(service_account_key)
+        parent = os.path.dirname(key_abs)
+        if parent == repo_root:
+            click.echo(
+                "[WARN] Service-account key is in repository root. This is allowed for local-only usage, "
+                "but ensure `.gitignore` protection remains in place.",
+                err=True,
+            )
+    except Exception:
+        # Keep warning best-effort and non-blocking
+        return
+
+
+WEB_VIEWER_PORT = 3000
+WEB_VIEWER_STARTUP_TIMEOUT_SEC = 15.0
+
+
+def _is_local_port_open(port: int) -> bool:
+    """Check if localhost:port is currently accepting TCP connections."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.2)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _is_satchange_web_viewer_healthy(port: int) -> bool:
+    """Check if localhost:port is serving the SatChange Next.js viewer."""
+    if not _is_local_port_open(port):
+        return False
+
+    try:
+        with urllib_request.urlopen(
+            f"http://127.0.0.1:{port}/api/health", timeout=0.5
+        ) as response:
+            if response.status != 200:
+                return False
+            payload = json.loads(response.read().decode("utf-8"))
+            return payload.get("ok") is True and payload.get("app") == "satchange-web"
+    except (urllib_error.URLError, TimeoutError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def _get_web_app_dir() -> Optional[str]:
+    """Resolve the repository-local Next.js web app directory."""
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+    web_dir = os.path.join(repo_root, "web")
+    if os.path.isdir(web_dir):
+        return web_dir
+    return None
+
+
+def _ensure_web_viewer_running(results_dir: str) -> Tuple[bool, str]:
+    """Ensure the local web viewer is reachable on localhost:3000."""
+    if _is_satchange_web_viewer_healthy(WEB_VIEWER_PORT):
+        return True, "already running"
+    if _is_local_port_open(WEB_VIEWER_PORT):
+        return (
+            False,
+            "localhost:3000 is occupied by another process (not SatChange web viewer)",
+        )
+
+    web_dir = _get_web_app_dir()
+    if not web_dir:
+        return False, "web/ app directory not found"
+
+    if not os.path.exists(os.path.join(web_dir, "package.json")):
+        return False, "web/package.json not found"
+
+    npm_executable = "npm.cmd" if os.name == "nt" else "npm"
+    env = os.environ.copy()
+    env["SATCHANGE_RESULTS_DIR"] = os.path.abspath(results_dir)
+
+    node_modules_dir = os.path.join(web_dir, "node_modules")
+    if not os.path.isdir(node_modules_dir):
+        return (
+            False,
+            "web dependencies are missing (run `cd web && npm install` once, then retry)",
+        )
+
+    log_path = os.path.join(web_dir, ".satchange-web.log")
+    try:
+        with open(log_path, "a", encoding="utf-8") as log_file:
+            if os.name == "nt":
+                creation_flags = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+                )
+                process = subprocess.Popen(
+                    [npm_executable, "run", "dev:reset"],
+                    cwd=web_dir,
+                    env=env,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    creationflags=creation_flags,
+                )
+            else:
+                process = subprocess.Popen(
+                    [npm_executable, "run", "dev:reset"],
+                    cwd=web_dir,
+                    env=env,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+    except FileNotFoundError:
+        return False, "npm is not installed or not on PATH"
+    except PermissionError as exc:
+        return False, f"failed to start web viewer: {exc}"
+    except OSError as exc:
+        return False, f"failed to start web viewer: {exc}"
+
+    checks = int(WEB_VIEWER_STARTUP_TIMEOUT_SEC / 0.5)
+    for _ in range(checks):
+        if _is_satchange_web_viewer_healthy(WEB_VIEWER_PORT):
+            return True, "started"
+        if process.poll() is not None:
+            return (
+                False,
+                f"web viewer exited early (code {process.returncode}), see {log_path}",
+            )
+        time.sleep(0.5)
+
+    if _is_satchange_web_viewer_healthy(WEB_VIEWER_PORT):
+        return True, "started"
+    return False, f"viewer not reachable yet, see {log_path}"
+
+
+def _print_web_hint(job_id: str, results_dir: str) -> None:
+    """Print web URL hint and auto-start status for local web viewer."""
+    viewer_ok, viewer_status = _ensure_web_viewer_running(results_dir)
+    click.echo(f"  web_url_hint: http://localhost:3000/jobs/{job_id}")
+    if viewer_ok:
+        click.echo(f"  web_viewer: {viewer_status}")
+    else:
+        click.echo(f"  web_viewer: not started ({viewer_status})")
+        click.echo(
+            f'  start manually: cd web && npm install && $env:SATCHANGE_RESULTS_DIR="{os.path.abspath(results_dir)}" && npm run dev:reset'
+        )
 
 
 @click.group()
@@ -75,6 +286,7 @@ def main(ctx: click.Context, verbose: bool, config_file: Optional[str]) -> None:
 
     # Load configuration
     config = Config(config_file)
+    _validate_local_key_location(config.get("service_account_key"))
     ctx.obj["config"] = config
 
     # Initialize GEE client if authentication config exists.
@@ -83,12 +295,18 @@ def main(ctx: click.Context, verbose: bool, config_file: Optional[str]) -> None:
         try:
             ctx.obj["gee_client"] = GEEClient(config)
         except AuthenticationError as e:
+            key_path = config.get("service_account_key")
             click.echo(
                 f"[WARN] Authentication unavailable: {e}",
                 err=True,
             )
+            if key_path and not os.path.exists(key_path):
+                click.echo(
+                    f"[WARN] Configured key file is missing: {key_path}",
+                    err=True,
+                )
             click.echo(
-                "[WARN] Use 'satchange config init' to refresh credentials.",
+                "[WARN] Run 'satchange config init --service-account-key <path> --project-id <project>' to refresh managed credentials.",
                 err=True,
             )
             ctx.obj["gee_client"] = None
@@ -120,6 +338,7 @@ def init(
 
     try:
         if service_account_key and project_id:
+            _validate_local_key_location(service_account_key)
             config.initialize_auth(service_account_key, project_id)
             click.echo("[OK] Configuration initialized successfully")
             click.echo(f"  Service account: {config.get('service_account_email')}")
@@ -327,6 +546,11 @@ def prompt_date_selection(alternatives: list, original_date: str, label: str) ->
     is_flag=True,
     help="Show what would be done using local validation only (no GEE/network calls)",
 )
+@click.option(
+    "--include-legacy-html",
+    is_flag=True,
+    help="Include legacy interactive HTML output (deprecated compatibility path)",
+)
 @click.pass_context
 def analyze(
     ctx: click.Context,
@@ -341,6 +565,7 @@ def analyze(
     name: Optional[str],
     non_interactive: bool,
     dry_run: bool,
+    include_legacy_html: bool,
 ) -> None:
     """
     Execute complete change detection analysis.
@@ -365,6 +590,7 @@ def analyze(
 
         # Create output directory
         os.makedirs(output, exist_ok=True)
+        output_abs = os.path.abspath(output)
 
         click.echo("Starting change detection analysis...")
         click.echo(f"  Location: {lat}, {lon}")
@@ -709,28 +935,24 @@ def analyze(
         click.echo("Saving analysis results...")
 
         # Save band arrays
-        np.save(
-            os.path.join(output, f"{output_prefix}_bands_a.npy"),
-            np.array(band_arrays_a, dtype=object),
-            allow_pickle=True,
-        )
-        np.save(
-            os.path.join(output, f"{output_prefix}_bands_b.npy"),
-            np.array(band_arrays_b, dtype=object),
-            allow_pickle=True,
-        )
+        bands_a_path = safe_join(output_abs, f"{output_prefix}_bands_a.npz")
+        bands_b_path = safe_join(output_abs, f"{output_prefix}_bands_b.npz")
+        _save_band_arrays_npz(bands_a_path, band_arrays_a)
+        _save_band_arrays_npz(bands_b_path, band_arrays_b)
 
         # Save classification
         np.save(
-            os.path.join(output, f"{output_prefix}_classification.npy"), classification
+            safe_join(output_abs, f"{output_prefix}_classification.npy"), classification
         )
 
         # Save change statistics
-        with open(os.path.join(output, f"{output_prefix}_change_stats.json"), "w") as f:
+        with open(
+            safe_join(output_abs, f"{output_prefix}_change_stats.json"), "w"
+        ) as f:
             json.dump(change_stats, f, indent=2, cls=NumpyJSONEncoder)
 
         # Save metadata
-        with open(os.path.join(output, f"{output_prefix}_metadata.json"), "w") as f:
+        with open(safe_join(output_abs, f"{output_prefix}_metadata.json"), "w") as f:
             json.dump(
                 {
                     "date_a": img_a_info,
@@ -804,24 +1026,30 @@ def analyze(
         try:
             # Load saved results for visualization
             classification = np.load(
-                os.path.join(output, f"{output_prefix}_classification.npy")
+                safe_join(output_abs, f"{output_prefix}_classification.npy"),
+                allow_pickle=False,
             )
-            bands_a = np.load(
-                os.path.join(output, f"{output_prefix}_bands_a.npy"), allow_pickle=True
-            ).item()
-            bands_b = np.load(
-                os.path.join(output, f"{output_prefix}_bands_b.npy"), allow_pickle=True
-            ).item()
+            bands_a = _load_band_arrays(
+                safe_join(output_abs, f"{output_prefix}_bands_a.npz")
+            )
+            bands_b = _load_band_arrays(
+                safe_join(output_abs, f"{output_prefix}_bands_b.npz")
+            )
 
             with open(
-                os.path.join(output, f"{output_prefix}_change_stats.json"), "r"
+                safe_join(output_abs, f"{output_prefix}_change_stats.json"), "r"
             ) as f:
                 vis_stats = json.load(f)
 
-            with open(os.path.join(output, f"{output_prefix}_metadata.json"), "r") as f:
+            with open(
+                safe_join(output_abs, f"{output_prefix}_metadata.json"), "r"
+            ) as f:
                 metadata = json.load(f)
 
             # Generate visualizations with new naming convention
+            default_formats = ["static", "geotiff"]
+            if include_legacy_html:
+                default_formats.append("interactive")
             with spinner("Generating visualizations..."):
                 output_files = visualization_manager.generate_all_outputs(
                     bands_a,
@@ -832,13 +1060,17 @@ def analyze(
                     lat,
                     lon,
                     output,
-                    ["static", "interactive", "geotiff"],
+                    default_formats,
                     output_prefix=output_prefix,
+                    include_web_bundle=True,
                 )
 
             click.echo("[OK] Visualizations generated:")
             for format_type, file_path in output_files.items():
                 click.echo(f"  {format_type}: {file_path}")
+            if "job_id" in output_files:
+                click.echo(f"  job_id: {output_files['job_id']}")
+                _print_web_hint(output_files["job_id"], output)
 
         except Exception as e:
             click.echo(f"⚠ Visualization generation failed: {e}", err=True)
@@ -878,9 +1110,9 @@ def analyze(
 )
 @click.option(
     "--format",
-    type=click.Choice(["static", "interactive", "geotiff", "all"]),
+    type=click.Choice(["static", "geotiff", "all"]),
     default="all",
-    help="Output format",
+    help="Output format (legacy interactive HTML is opt-in via --include-legacy-html)",
 )
 @click.option(
     "--emboss-intensity", default=1.0, type=float, help="Emboss effect strength (0-2)"
@@ -891,6 +1123,11 @@ def analyze(
     type=str,
     help="Location name for output files (default: uses existing or lat_lon)",
 )
+@click.option(
+    "--include-legacy-html",
+    is_flag=True,
+    help="Include legacy interactive HTML output (deprecated compatibility path)",
+)
 @click.pass_context
 def export(
     ctx: click.Context,
@@ -898,6 +1135,7 @@ def export(
     format: str,
     emboss_intensity: float,
     name: Optional[str],
+    include_legacy_html: bool,
 ) -> None:
     """
     Generate visualization outputs from analysis results.
@@ -922,8 +1160,8 @@ def export(
         import json
 
         # Look for metadata file to get output prefix
-        metadata_files = glob_module.glob(os.path.join(result, "*_metadata.json"))
-        legacy_metadata = os.path.join(result, "metadata.json")
+        metadata_files = glob_module.glob(safe_join(result, "*_metadata.json"))
+        legacy_metadata = safe_join(result, "metadata.json")
 
         output_prefix = None
         metadata_path = None
@@ -943,18 +1181,10 @@ def export(
             sys.exit(1)
 
         # Define file paths based on naming convention
-        if output_prefix:
-            classification_path = os.path.join(
-                result, f"{output_prefix}_classification.npy"
-            )
-            bands_a_path = os.path.join(result, f"{output_prefix}_bands_a.npy")
-            bands_b_path = os.path.join(result, f"{output_prefix}_bands_b.npy")
-            stats_path = os.path.join(result, f"{output_prefix}_change_stats.json")
-        else:
-            classification_path = os.path.join(result, "classification.npy")
-            bands_a_path = os.path.join(result, "bands_a.npy")
-            bands_b_path = os.path.join(result, "bands_b.npy")
-            stats_path = os.path.join(result, "change_stats.json")
+        classification_path = _find_result_file(result, output_prefix, "classification")
+        bands_a_path = _find_result_file(result, output_prefix, "bands_a")
+        bands_b_path = _find_result_file(result, output_prefix, "bands_b")
+        stats_path = _find_result_file(result, output_prefix, "change_stats")
 
         # Check required files exist
         required_files = [
@@ -976,9 +1206,9 @@ def export(
         # Load analysis results
         click.echo("Loading analysis results...")
 
-        classification = np.load(classification_path, allow_pickle=True)
-        bands_a = np.load(bands_a_path, allow_pickle=True).item()
-        bands_b = np.load(bands_b_path, allow_pickle=True).item()
+        classification = np.load(classification_path, allow_pickle=False)
+        bands_a = _load_band_arrays(bands_a_path)
+        bands_b = _load_band_arrays(bands_b_path)
 
         with open(stats_path, "r") as f:
             stats = json.load(f)
@@ -1015,9 +1245,9 @@ def export(
         # Generate visualizations
         click.echo("Generating visualizations...")
 
-        formats_to_generate = (
-            [format] if format != "all" else ["static", "interactive", "geotiff"]
-        )
+        formats_to_generate = [format] if format != "all" else ["static", "geotiff"]
+        if include_legacy_html and "interactive" not in formats_to_generate:
+            formats_to_generate.append("interactive")
         output_files = visualization_manager.generate_all_outputs(
             bands_a,
             bands_b,
@@ -1029,12 +1259,16 @@ def export(
             result,
             formats_to_generate,
             output_prefix=final_output_prefix,
+            include_web_bundle=True,
         )
 
         click.echo("[OK] Visualization generation completed!")
         click.echo("Generated files:")
         for format_type, file_path in output_files.items():
             click.echo(f"  {format_type}: {file_path}")
+        if "job_id" in output_files:
+            click.echo(f"  job_id: {output_files['job_id']}")
+            _print_web_hint(output_files["job_id"], result)
 
     except Exception as e:
         click.echo(f"[ERROR] Export failed: {e}", err=True)
